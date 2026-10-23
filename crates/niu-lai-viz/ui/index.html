@@ -30,7 +30,7 @@ body.noside aside { display: none; }
 .ptitle { cursor: grab; } .panel.dragging { opacity: .4; }
 .panel.drop-before { box-shadow: -8px 0 0 #ff00ff, 5px 5px 0 rgba(36,20,10,.75); } .panel.drop-after { box-shadow: 8px 0 0 #ff00ff, 5px 5px 0 rgba(36,20,10,.75); }
 .ptitle .sbtn { min-width: 52px; } .ptitle .ybtn.on { background: #ff00ff; color: #fff; }
-#ydlg, #fdlg { padding: 10px; min-width: 300px; } #ydlg::backdrop, #fdlg::backdrop { background: rgba(47, 90, 20, .55); }
+#ydlg, #fdlg, #ndlg { padding: 10px; min-width: 300px; } #ydlg::backdrop, #fdlg::backdrop, #ndlg::backdrop { background: rgba(47, 90, 20, .55); }
 #ydlg form, #fdlg form { display: flex; flex-direction: column; gap: 8px; } #ydlg label { display: flex; justify-content: space-between; gap: 8px; align-items: center; } #fdlg label { display: flex; flex-direction: column; gap: 2px; }
 #ydlg h2 { word-break: break-all; } #ydlg input, #ydlg select { width: 160px; }
 #logoslot { width: 84px; height: 84px; flex: none; }
@@ -120,6 +120,10 @@ body.chat-open #chat { display: flex; }
 .hruns button { font-size: 10px; padding: 0 4px; opacity: .55; } .hruns button.on { opacity: 1; background: var(--snout); }
 .hruns i { display: inline-block; width: 8px; height: 8px; border: 1px solid #000; margin-right: 3px; }
 #fexpr { width: 100%; min-height: 64px; font: inherit; }
+#ndlg form { display: flex; flex-direction: column; gap: 8px; } #ndlg h2 { word-break: break-all; } #ntext { width: min(520px, 80vw); min-height: 140px; font: inherit; }
+.pnote { flex: none; max-height: 72px; overflow-y: auto; margin-top: 4px; padding: 2px 6px; background: var(--fur-l); border: 2px dashed var(--ink); font-size: 11px; font-weight: normal; cursor: pointer; }
+.pnote:empty { display: none; } .pnote > * { margin: 2px 0; } .pnote table { border-collapse: collapse; } .pnote th, .pnote td { border: 1px solid var(--ink); padding: 0 4px; }
+.pnote ul, .pnote ol { padding-left: 16px; } .ptitle .nbtn.on { background: var(--snout); }
 #fdlg { max-width: 560px; }
 #fdlg pre { white-space: pre-wrap; font-size: 11px; margin: 4px 0; }
 #chatform { display: flex; gap: 6px; } #chatin { flex: 1; resize: none; height: 54px; font: inherit; font-weight: normal; background: var(--paper);
@@ -182,6 +186,11 @@ body.chat-open #chat { display: flex; }
   <label>y min <input id="ymin" type="number" step="any" placeholder="auto"></label>
   <label>y max <input id="ymax" type="number" step="any" placeholder="auto"></label>
   <div class="row"><button value="ok">ok</button><button value="auto">auto range</button><button value="cancel" formnovalidate>cancel</button></div>
+</form></dialog>
+<dialog id="ndlg" class="bevel"><form method="dialog">
+  <h2 id="ndlg-t">note</h2>
+  <textarea id="ntext" placeholder="markdown, e.g. **p99 regressed at 30 min** on the hotlr runs"></textarea>
+  <div class="row"><button value="ok">save</button><button value="clear">delete note</button><button value="cancel" formnovalidate>cancel</button></div>
 </form></dialog>
 <dialog id="fdlg" class="bevel"><form method="dialog">
   <h2>ƒ custom plot</h2>
@@ -275,9 +284,9 @@ const ls = (k, d) => { try { return JSON.parse(localStorage.getItem("niu." + k))
 const S = {
   runs: [], runByName: new Map(), shownRuns: [], picked: new Set(ls("picked", [])), firstLoad: localStorage.getItem("niu.picked") === null,
   keys: [], hists: [], namer: (n) => n, shownKeys: [], hsel: ls("hsel", {}), panels: ls("panels", []), smooth: 0, view: null,
-  align: ls("align", { mode: "start", key: "", above: 0 }), xkey: ls("xkey", ""), wide: new Set(ls("wide", [])), yopt: ls("yopt", {}), titles: ls("titles", {}),
+  align: ls("align", { mode: "start", key: "", above: 0 }), xkey: ls("xkey", ""), wide: new Set(ls("wide", [])), yopt: ls("yopt", {}), titles: ls("titles", {}), notes: ls("notes", {}),
 };
-const save = () => { for (const k of ["picked", "panels", "align", "xkey", "wide", "yopt", "titles", "hsel"]) localStorage.setItem("niu." + k, JSON.stringify(k === "picked" || k === "wide" ? [...S[k]] : S[k])); };
+const save = () => { for (const k of ["picked", "panels", "align", "xkey", "wide", "yopt", "titles", "hsel", "notes"]) localStorage.setItem("niu." + k, JSON.stringify(k === "picked" || k === "wide" ? [...S[k]] : S[k])); };
 // Garish run colors, handed out oldest-first so a run keeps its color as new runs appear.
 const RUN_COLORS = ["#ff00ff", "#0047ff", "#ff6a00", "#7a00ff", "#d40000", "#008a3e", "#e6d000", "#8b4513", "#00c9b0", "#ff3d8b", "#5a7d00", "#00a2ff"];
 const colorCache = new Map();
@@ -821,7 +830,7 @@ function addPanels(keys, scroll) {
   for (const key of keys) {
     S.panels.push(key); S.panelSet.add(key);
     const p = document.createElement("div"); p.className = "panel bevel";
-    p.innerHTML = `<div class="ptitle"><span></span><em></em><button class="sbtn" title="y scale: lin → log → symlog">lin</button><button class="ybtn" title="set y min/max">y↕</button><button class="wbtn" title="full width">⇔</button><button class="xbtn">x</button></div>${isHist(key) ? `<div class="hruns"></div>` : ""}<div class="plot"><div class="tip"></div></div>`;
+    p.innerHTML = `<div class="ptitle"><span></span><em></em><button class="sbtn" title="y scale: lin → log → symlog">lin</button><button class="ybtn" title="set y min/max">y↕</button><button class="wbtn" title="full width">⇔</button><button class="nbtn" title="note">✎</button><button class="xbtn">x</button></div>${isHist(key) ? `<div class="hruns"></div>` : ""}<div class="pnote" title="click to edit"></div><div class="plot"><div class="tip"></div></div>`;
     if (S.wide.has(key)) p.classList.add("wide");
     const title = p.querySelector(".ptitle"); title.draggable = true; title.title = "drag to reorder";
     title.addEventListener("dragstart", (e) => { dragKey = key; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", key); p.classList.add("dragging"); });
@@ -833,6 +842,7 @@ function addPanels(keys, scroll) {
     if (isHist(key)) { const sb = p.querySelector(".sbtn"); sb.title = "colour: observations/s (rate) or share of each time slice (share)";
       sb.onclick = () => { const o = S.yopt[key] || {}; setYopt(key, { ...o, scale: o.scale === "share" ? "lin" : "share" }); }; p.querySelector(".ybtn").style.display = "none"; }
     p.querySelector(".xbtn").onclick = () => removePanel(key);
+    p.querySelector(".nbtn").onclick = p.querySelector(".pnote").onclick = () => openNoteDialog(key); renderNote(key, p);
     frag.appendChild(p);
     const c = isHist(key) ? new HistChart(key, p) : new Chart(key, p); p._chart = c; charts.set(key, c); c.sbtn = p.querySelector(".sbtn"); c.ybtn = p.querySelector(".ybtn");
     c.sbtn.textContent = isHist(key) ? (S.yopt[key]?.scale === "share" ? "share" : "rate") : (S.yopt[key] || {}).scale || "lin"; c.ybtn.classList.toggle("on", S.yopt[key]?.min != null || S.yopt[key]?.max != null);
@@ -843,9 +853,22 @@ function addPanels(keys, scroll) {
   $("#empty").style.display = S.panels.length ? "none" : ""; save(); keyList.schedule(true); pump();
 }
 function removePanel(key) {
-  S.wide.delete(key); delete S.titles[key];
+  S.wide.delete(key); delete S.titles[key]; delete S.notes[key];
   const c = charts.get(key); if (!c) return; c.destroy(); vis.unobserve(c.panel); ro.unobserve(c.plot); c.panel.remove(); charts.delete(key);
   S.panels = S.panels.filter((k) => k !== key); S.panelSet.delete(key); $("#empty").style.display = S.panels.length ? "none" : ""; save(); keyList.schedule(true);
+}
+// Chart notes: short markdown pinned under a chart title (by you or the agent), saved with dashboards.
+const md = (text) => window.marked && window.DOMPurify ? DOMPurify.sanitize(marked.parse(text, { gfm: true, breaks: true })) : esc(text);
+function renderNote(key, p = charts.get(key)?.panel) {
+  if (!p) return; const n = S.notes[key] || "", el = p.querySelector(".pnote");
+  el.innerHTML = n ? md(n) : ""; for (const a of el.querySelectorAll("a")) { a.target = "_blank"; a.rel = "noopener noreferrer"; a.onclick = (e) => e.stopPropagation(); }
+  p.querySelector(".nbtn").classList.toggle("on", !!n);
+}
+function setNote(key, note) { note = (note || "").trim(); if (note) S.notes[key] = note; else delete S.notes[key]; save(); renderNote(key); }
+function openNoteDialog(key) {
+  const dlg = $("#ndlg"); $("#ndlg-t").textContent = "note · " + (S.titles[key] || key); $("#ntext").value = S.notes[key] || "";
+  dlg.onclose = () => { if (dlg.returnValue === "ok") setNote(key, $("#ntext").value); else if (dlg.returnValue === "clear") setNote(key, ""); };
+  dlg.returnValue = ""; dlg.showModal(); $("#ntext").focus();
 }
 const picksChanged = debounce(() => { invalidate(true); refreshKeys(); }, 150);
 function togglePick(name) { S.picked.has(name) ? S.picked.delete(name) : S.picked.add(name); save(); runList.schedule(true); $("#runcount").textContent = `${S.picked.size}/${S.runs.length}`; picksChanged(); }
@@ -970,7 +993,7 @@ const TOOLS = [
       return res; } },
   { name: "list_charts", description: "Charts currently shown, in order, with their y-axis settings.",
     parameters: { type: "object", properties: {} },
-    run: () => ({ charts: S.panels.map((k) => ({ key: k, ...(S.titles[k] ? { title: S.titles[k] } : {}), wide: S.wide.has(k), ...(S.yopt[k] || {}) })), align: S.align, x_axis: S.xkey || "time", smoothing: S.smooth }) },
+    run: () => ({ charts: S.panels.map((k) => ({ key: k, ...(S.titles[k] ? { title: S.titles[k] } : {}), wide: S.wide.has(k), ...(S.yopt[k] || {}), ...(S.notes[k] ? { note: S.notes[k] } : {}) })), align: S.align, x_axis: S.xkey || "time", smoothing: S.smooth }) },
   { name: "add_charts", description: "Add one chart per key (exact keys from list_metrics), optionally setting y scale/range and full width.",
     parameters: { type: "object", properties: { keys: { type: "array", items: { type: "string" } }, scale: { type: "string", enum: ["lin", "log", "symlog"] }, ymin: { type: "number" }, ymax: { type: "number" }, wide: { type: "boolean" } }, required: ["keys"] },
     run: ({ keys, scale, ymin, ymax, wide }) => { const { ok, unknown } = needKeys(keys);
@@ -995,6 +1018,9 @@ The formula is validated first; on error fix it and retry.`,
   { name: "set_y_axis", description: "Set a chart's y scale and/or manual range. Pass null min/max for auto.",
     parameters: { type: "object", properties: { key: { type: "string" }, scale: { type: "string", enum: ["lin", "log", "symlog"] }, min: { type: ["number", "null"] }, max: { type: ["number", "null"] } }, required: ["key"] },
     run: ({ key, ...o }) => { setYopt(key, { ...(S.yopt[key] || {}), ...o }); return { key, y: S.yopt[key] || "auto" }; } },
+  { name: "set_chart_note", description: "Pin a short markdown note under a chart (your conclusion, key numbers, a small table); it is saved with the dashboard. Replaces the chart's note; empty note removes it. Keep it to a few lines.",
+    parameters: { type: "object", properties: { key: { type: "string", description: "chart key from list_charts" }, note: { type: "string" } }, required: ["key", "note"] },
+    run: ({ key, note }) => { if (!S.panelSet.has(key)) return { error: "no such chart; use list_charts" }; setNote(key, note); return { key, note: S.notes[key] || null }; } },
   { name: "set_alignment", description: "T=0 per run. start: run start. first: first sample of a series matching key (regex). above: first value of key > above. Use to line up runs with different startup times.",
     parameters: { type: "object", properties: { mode: { type: "string", enum: ["start", "first", "above"] }, key: { type: "string" }, above: { type: "number" } }, required: ["mode"] },
     run: ({ mode, key, above }) => { setAlign(mode, key, above); return { align: { mode, key, above } }; } },
@@ -1015,6 +1041,7 @@ You help the user build charts by talking with them, using tools that drive the 
 - Histograms (# keys, e.g. latencies): hist_stats for numbers (p50/p99, obs/s); add_charts for the heatmap; add_custom_plot with quantile(0.99, 'key') to compare one quantile across runs as lines.
 - Prefer few, useful charts. Suggest log scale for losses spanning orders of magnitude, alignment when runs start at different times, a step metric as x axis when comparing training progress.
 - If the request is ambiguous, ask one short question.
+- When you answer a question with numbers or a conclusion about a chart, also pin a short version of it on that chart with set_chart_note, so it is saved with the dashboard.
 - Reply briefly. Markdown is rendered: use short lists, \`code\` for keys, and a small table when comparing runs. The occasional moo.
 State now: ${S.runs.length} runs (${S.picked.size} picked), ${S.keys.length} metric keys in picked runs, ${S.panels.length} charts, T=0 ${S.align.mode}${S.align.key ? " " + S.align.key : ""}, x axis ${S.xkey || "time"}.`;
 }
@@ -1043,7 +1070,7 @@ async function llmStep() {
 }
 function say(cls, text) {
   const el = document.createElement("div"); el.className = "msg " + cls;
-  if (cls === "bot" && window.marked && window.DOMPurify) el.innerHTML = DOMPurify.sanitize(marked.parse(text, { gfm: true, breaks: true }));
+  if (cls === "bot" && window.marked && window.DOMPurify) el.innerHTML = md(text);
   else el.innerHTML = esc(text).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
   for (const a of el.querySelectorAll("a")) { a.target = "_blank"; a.rel = "noopener noreferrer"; }
   $("#chatlog").appendChild(el); $("#chatlog").scrollTop = 1e9; return el;
@@ -1084,10 +1111,24 @@ if (!S.llm.key) $("#chat").classList.add("cfg");
 
 // ---------- dashboards: named, server-side (<root>/.dashboards), versioned; /?d=<name> opens one ----------
 S.dash = null; // { name, version } of the loaded dashboard
+// The chat is saved with the dashboard: last 200 messages, long tool results cut, so the file stays small.
+const chatForSave = () => chatHist.slice(-200).map((m) => (m.role === "tool" && m.content.length > 4000 ? { ...m, content: m.content.slice(0, 4000) + "…" } : m));
+function restoreChat(hist) {
+  // Drop a trailing assistant turn whose tool calls never got results (saved mid-reply); providers reject it.
+  let cut = hist.length; const pending = new Set();
+  hist.forEach((m, i) => { if (m.role === "assistant" && m.tool_calls?.length) { if (!pending.size) cut = i; m.tool_calls.forEach((c) => pending.add(c.id)); }
+    else if (m.role === "tool") pending.delete(m.tool_call_id); if (!pending.size) cut = hist.length; });
+  chatHist = hist.slice(0, pending.size ? cut : hist.length); $("#chatlog").innerHTML = "";
+  for (const m of chatHist) {
+    if (m.role === "user") say("user", m.content);
+    else if (m.role === "assistant") { if (m.content) say("bot", m.content.trim());
+      for (const c of m.tool_calls || []) say("tool", `${c.function.name}(${(c.function.arguments || "").replace(/^\{|\}$/g, "").slice(0, 160)})`); }
+  }
+}
 function dashState() {
   const only = (o) => Object.fromEntries(Object.entries(o).filter(([k]) => S.panelSet.has(k)));
-  return { panels: [...S.panels], titles: only(S.titles), yopt: only(S.yopt), hsel: only(S.hsel), wide: S.panels.filter((k) => S.wide.has(k)),
-    align: S.align, xkey: S.xkey, smooth: S.smooth, picked: [...S.picked] };
+  return { panels: [...S.panels], titles: only(S.titles), yopt: only(S.yopt), hsel: only(S.hsel), notes: only(S.notes), wide: S.panels.filter((k) => S.wide.has(k)),
+    align: S.align, xkey: S.xkey, smooth: S.smooth, picked: [...S.picked], chat: chatForSave() };
 }
 async function refreshDashes() {
   const list = await (await api("/api/dashboards")).json(), sel = $("#dsel"), cur = S.dash?.name;
@@ -1095,17 +1136,18 @@ async function refreshDashes() {
   sel.value = list.some((d) => d.name === cur) ? cur : ""; return list;
 }
 function setDashUrl() { const u = new URL(location.href); S.dash ? u.searchParams.set("d", S.dash.name) : u.searchParams.delete("d"); history.replaceState(null, "", u); }
-async function loadDash(name) {
+async function loadDash(name, withChat = false) {
   const r = await api("/api/dashboards/" + encodeURIComponent(name)); if (!r.ok) return { error: (await r.json()).error };
   const d = await r.json(), st = d.state || {};
   for (const k of [...S.panels]) removePanel(k);
   S.panels = []; S.panelSet = new Set(); // panels restored from localStorage may not be on screen yet
-  for (const k of st.panels || []) { delete S.yopt[k]; delete S.hsel[k]; }
-  Object.assign(S.titles, st.titles || {}); Object.assign(S.yopt, st.yopt || {}); Object.assign(S.hsel, st.hsel || {}); for (const k of st.wide || []) S.wide.add(k);
+  for (const k of st.panels || []) { delete S.yopt[k]; delete S.hsel[k]; delete S.notes[k]; }
+  Object.assign(S.notes, st.notes || {}); Object.assign(S.titles, st.titles || {}); Object.assign(S.yopt, st.yopt || {}); Object.assign(S.hsel, st.hsel || {}); for (const k of st.wide || []) S.wide.add(k);
   if (st.align) S.align = st.align; S.xkey = st.xkey || ""; S.smooth = st.smooth || 0;
   $("#amode").value = S.align.mode; $("#akey").value = S.align.key; $("#aval").value = S.align.above;
   $("#xmode").value = S.xkey ? "metric" : "time"; $("#xkey").value = S.xkey; $("#smooth").value = S.smooth; $("#smoothv").textContent = S.smooth.toFixed(2);
   const picks = (st.picked || []).filter((n) => S.runByName.has(n)); if (picks.length) S.picked = new Set(picks);
+  if (withChat && !niuBusy) restoreChat(st.chat || []);
   S.dash = { name, version: d.version }; save(); filterRuns(); await refreshKeys(); addPanels(st.panels || []); S.view = null; invalidate(true);
   await refreshDashes(); setDashUrl(); return { loaded: name, charts: S.panels.length, picked: S.picked.size, missing_runs: (st.picked || []).length - picks.length };
 }
@@ -1123,7 +1165,7 @@ async function saveDashUi(name) {
   if (r.error) alert(r.error); else if (r.saved) flash($("#dsave"), "saved"); return r;
 }
 function flash(btn, text) { const t = btn.textContent; btn.textContent = text; setTimeout(() => (btn.textContent = t), 1200); }
-$("#dsel").onchange = async (e) => { const n = e.target.value; if (n) { const r = await loadDash(n); if (r.error) alert(r.error); } else { S.dash = null; setDashUrl(); } };
+$("#dsel").onchange = async (e) => { const n = e.target.value; if (n) { const r = await loadDash(n, true); if (r.error) alert(r.error); } else { S.dash = null; setDashUrl(); } };
 $("#dsave").onclick = () => { if (S.dash) saveDashUi(S.dash.name); else $("#dsaveas").click(); };
 $("#dsaveas").onclick = () => { const n = prompt("dashboard name (letters, digits, space, - _ .)", S.dash?.name || ""); if (n && n.trim()) { if (S.dash?.name !== n.trim()) S.dash = null; saveDashUi(n.trim()); } };
 $("#dlink").onclick = async () => {
@@ -1136,7 +1178,7 @@ $("#ddel").onclick = async () => { if (!S.dash || !confirm(`delete dashboard "${
 TOOLS.push(
   { name: "list_dashboards", description: "Saved dashboards on this server (shared by everyone using it).", parameters: { type: "object", properties: {} },
     run: async () => ({ dashboards: await refreshDashes(), current: S.dash?.name || null }) },
-  { name: "save_dashboard", description: "Save the current charts, axis settings, T=0 and picked runs as a named dashboard; returns a shareable link. Fails with conflict if someone else saved that name since it was loaded: then ask the user before overwrite=true.",
+  { name: "save_dashboard", description: "Save the current charts, chart notes, axis settings, T=0, picked runs and this chat as a named dashboard; returns a shareable link. Fails with conflict if someone else saved that name since it was loaded: then ask the user before overwrite=true.",
     parameters: { type: "object", properties: { name: { type: "string" }, overwrite: { type: "boolean" } }, required: ["name"] },
     run: async ({ name, overwrite }) => { const r = await saveDash(name.trim(), !!overwrite); return r.saved ? { ...r, link: `${location.origin}/?d=${encodeURIComponent(r.saved)}` } : r; } },
   { name: "load_dashboard", description: "Replace the current charts and settings with a saved dashboard.", parameters: { type: "object", properties: { name: { type: "string" } }, required: ["name"] },
@@ -1156,7 +1198,7 @@ drawBackground(); animateNiu($("#logo")); document.querySelectorAll(".niu").forE
   await refreshRuns();
   await refreshKeys(); refreshDashes();
   const want = new URLSearchParams(location.search).get("d");
-  if (want) { const r = await loadDash(want); if (!r.error) { connect(); return; } alert(`dashboard "${want}": ${r.error}`); }
+  if (want) { const r = await loadDash(want, true); if (!r.error) { connect(); return; } alert(`dashboard "${want}": ${r.error}`); }
   const initial = S.panels.length ? S.panels : [...S.keys.filter((k) => /loss|grad_norm|learning_rate|utilization.*gpu=0|eval_acc/.test(k)).slice(0, 5), ...S.hists.slice(0, 1).map((h) => "#" + h)];
   S.panels = []; S.panelSet = new Set(); addPanels(initial);
   connect();

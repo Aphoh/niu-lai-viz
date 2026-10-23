@@ -59,3 +59,5 @@ exclude = ["^python_", "^process_"]
 
 The header's dashboard menu saves the current charts, formulas, axis settings, T=0 and picked runs as a named dashboard in `<root>/.dashboards/`. Anyone using the same `serve` sees it, and `http://host:8737/?d=<name>` (the `link` button) opens it. Saves are versioned: if someone else saved the same dashboard since you loaded it, you're asked before overwriting.
 
+A dashboard also saves its chart notes (markdown under a chart title: click `✎` to write one, or the agent pins its conclusions there with `set_chart_note`) and the last 200 chat messages, so opening the link restores the conversation and you can carry on asking.
+
