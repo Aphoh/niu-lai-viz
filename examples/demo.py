@@ -12,12 +12,13 @@ from fake_exporter import FakeJob, serve  # noqa: E402
 
 RUNS = [
     # name, lr, seed, speed, lifetime_s (None = live, negative = SIGKILL)
-    ("baseline-lr3e-4", 3e-4, 1, 40, 50),
-    ("lowlr-1e-4", 1e-4, 2, 40, 50),
-    ("hotlr-3e-3", 3e-3, 3, 40, 50),
-    ("crashy-lr6e-4", 6e-4, 4, 40, -30),
-    ("live-lr3e-4-bs128", 3e-4, 5, 15, None),
-    ("live-lr1e-3", 1e-3, 6, 15, None),
+    # Real sweeps have long names; the distinctive bits are often at the end (seed, node, timestamp).
+    ("qwen3-8b-sft-baseline-lr3e-4-bs64-cosine-warmup200-seed1-node03-20261023T0914", 3e-4, 1, 40, 50),
+    ("qwen3-8b-sft-lowlr-lr1e-4-bs64-cosine-warmup200-seed2-node03-20261023T0914", 1e-4, 2, 40, 50),
+    ("qwen3-8b-sft-hotlr-lr3e-3-bs64-cosine-warmup200-seed3-node05-20261023T0915", 3e-3, 3, 40, 50),
+    ("qwen3-8b-sft-crashy-lr6e-4-bs64-cosine-warmup200-seed4-node07-20261023T0915", 6e-4, 4, 40, -30),
+    ("live-qwen3-8b-grpo-rollout16-lr3e-4-bs128-kl0.04-seed5-node01-20261023T1102", 3e-4, 5, 15, None),
+    ("live-qwen3-8b-grpo-rollout16-lr1e-3-bs64-kl0.04-seed6-node02-20261023T1102", 1e-3, 6, 15, None),
     ("live-yolo-1e-2", 1e-2, 7, 15, None),
 ]
 
@@ -37,7 +38,7 @@ if not a.no_serve:
 procs = []
 for i, (name, lr, seed, speed, life) in enumerate(RUNS):
     port = a.base_port + i
-    serve(port, FakeJob(lr, seed, speed))
+    serve(port, FakeJob(lr, seed, speed, batch=128 if "bs128" in name else 64))
     cmd = [a.bin, "scrape", "--config", str(cfg), "--root", a.root, "--run", name,
            "--target", f"trainer=http://127.0.0.1:{port}/metrics", "--interval-ms", "500",
            "--label", f"lr={lr:g}", "--label", f"seed={seed}",

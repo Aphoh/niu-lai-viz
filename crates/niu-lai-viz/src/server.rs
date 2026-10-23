@@ -792,6 +792,8 @@ struct HistRun {
 struct HistResp {
     x0: f64,
     x1: f64,
+    /// Windows actually used: at most `slices`, but each spans >= 1.5 scrape intervals.
+    slices: usize,
     runs: Vec<HistRun>,
     errors: BTreeMap<String, String>,
 }
@@ -814,7 +816,7 @@ fn hist_buckets<'a>(d: &'a RunData, key: &str) -> Vec<(f64, &'a Series)> {
 
 fn hist_blocking(app: &App, req: HistReq) -> HistResp {
     let anchor_re = req.align.as_ref().and_then(|a| Regex::new(&a.key).ok());
-    let found: Vec<(String, Result<Option<(f64, f64, f64)>, String>)> = req
+    let found: Vec<(String, Result<Option<(f64, f64, f64, f64)>, String>)> = req
         .runs
         .par_iter()
         .map(|r| {
@@ -824,25 +826,29 @@ fn hist_blocking(app: &App, req: HistReq) -> HistResp {
                     (Some(a), Some(re)) => d.anchor(a, re)?,
                     _ => 0.0,
                 };
-                let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+                let (mut lo, mut hi, mut gap) = (f64::INFINITY, f64::NEG_INFINITY, 0.0f64);
                 for (_, s) in hist_buckets(&d, &req.key) {
                     if let (Some(&a), Some(&b)) = (s.t.first(), s.t.last()) {
                         lo = lo.min(a as f64 - offset);
                         hi = hi.max(b as f64 - offset);
+                        if s.t.len() > 1 {
+                            gap = gap.max((b - a) as f64 / (s.t.len() - 1) as f64);
+                        }
                     }
                 }
-                lo.is_finite().then_some((offset, lo, hi))
+                lo.is_finite().then_some((offset, lo, hi, gap))
             });
             (r.clone(), res)
         })
         .collect();
     let mut out = HistResp::default();
-    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    let (mut lo, mut hi, mut gap) = (f64::INFINITY, f64::NEG_INFINITY, 0.0f64);
     for (r, res) in &found {
         match res {
-            Ok(Some((_, a, b))) => {
+            Ok(Some((_, a, b, g))) => {
                 lo = lo.min(*a);
                 hi = hi.max(*b);
+                gap = gap.max(*g);
             }
             Ok(None) => {}
             Err(e) => {
@@ -855,14 +861,20 @@ fn hist_blocking(app: &App, req: HistReq) -> HistResp {
     if out.x1 <= out.x0 {
         out.x1 = out.x0 + 1.0;
     }
-    let n = req.slices.clamp(1, 4096);
+    let n = if gap > 0.0 {
+        let fit = ((out.x1 - out.x0) / (1.5 * gap)).floor().max(1.0) as usize;
+        req.slices.clamp(1, 4096).min(fit)
+    } else {
+        req.slices.clamp(1, 4096)
+    };
+    out.slices = n;
     let edges: Vec<f64> = (0..=n)
         .map(|k| out.x0 + (out.x1 - out.x0) * k as f64 / n as f64)
         .collect();
     out.runs = found
         .par_iter()
         .filter_map(|(r, res)| {
-            let &Ok(Some((offset, _, _))) = res else {
+            let &Ok(Some((offset, _, _, _))) = res else {
                 return None;
             };
             let d = app.run(r).ok()?;

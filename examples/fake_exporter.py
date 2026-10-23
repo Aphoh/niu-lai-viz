@@ -3,10 +3,31 @@
 
     python3 fake_exporter.py --port 9101 --lr 3e-4 --seed 1 --speed 40
 """
-import argparse, math, random, threading, time
+import argparse, bisect, math, random, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-BUCKETS = [0.05, 0.1, 0.2, 0.3, 0.5, 0.8, 1.2, 2.0, 5.0]
+STEP_BUCKETS = [float(f"{0.05 * 1.35**k:.3g}") for k in range(16)]  # 50ms .. ~4.5s
+# vLLM's default buckets (vllm/v1/metrics/buckets.py), so the rollout histograms look like a real server's.
+TTFT_BUCKETS = [0.001, 0.005, 0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 7.5, 10.0,
+                20.0, 40.0, 80.0, 160.0, 640.0, 2560.0]
+ITL_BUCKETS = [0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.75, 1.0, 2.5, 5.0, 7.5, 10.0, 20.0, 40.0, 80.0]
+
+
+class Hist:
+    def __init__(self, bounds):
+        self.bounds, self.counts, self.sum = bounds, [0] * (len(bounds) + 1), 0.0
+
+    def observe(self, v):
+        self.counts[bisect.bisect_left(self.bounds, v)] += 1
+        self.sum += v
+
+    def render(self, name, help_):
+        out, cum = [f"# HELP {name} {help_}\n# TYPE {name} histogram"], 0
+        for b, c in zip(self.bounds + ["+Inf"], self.counts):
+            cum += c
+            out.append(f'{name}_bucket{{le="{b}"}} {cum}')
+        out.append(f"{name}_sum {self.sum:.4f}\n{name}_count {cum}")
+        return out
 
 
 class FakeJob:
@@ -18,8 +39,11 @@ class FakeJob:
         self.step = 0
         self.loss = 2.8 + self.rng.random() * 0.4
         self.temp = [55 + self.rng.random() * 10 for _ in range(gpus)]
-        self.hist = [0] * (len(BUCKETS) + 1)
-        self.hist_sum = 0.0
+        self.step_h, self.ttft_h, self.itl_h = Hist(STEP_BUCKETS), Hist(TTFT_BUCKETS), Hist(ITL_BUCKETS)
+        self.step_base = 0.18 * (batch / 64) ** 0.8 * (1 + 0.15 * self.rng.random())
+        self.straggler = seed % 3 == 1  # one slow rank every so often: a second band in the step-time heatmap
+        self.slowdown_at = self.rng.uniform(25, 45) if lr > 1e-3 else None  # sim seconds
+        self.req_t = 0.0
         self.tokens = 0
         self.eval_acc = 0.0
         self.spike = 0.0
@@ -45,16 +69,45 @@ class FakeJob:
             self.spike *= 0.97
             if self.diverge_at and s > self.diverge_at:
                 self.loss *= 1.0 + 0.002 * r.random()
-            dt = r.lognormvariate(math.log(0.25), 0.35) * (4 if s % 300 < 15 else 1)
-            self.hist_sum += dt
-            for i, b in enumerate(BUCKETS + [math.inf]):
-                if dt <= b:
-                    self.hist[i] += 1
-                    break
+            self.step_h.observe(self.step_time(s))
             self.tokens += self.batch * 2048
             if s % 500 == 0:
                 self.eval_acc = min(0.92, max(0.0, 1.05 - self.loss * 0.6 + r.gauss(0, 0.02)))
+        self.rollouts(time.time() - self.t0)
         return self.step
+
+    def step_time(self, s):
+        """Seconds for step s: drifting base, eval stalls, checkpoint tail, stragglers, a late slowdown."""
+        r, t = self.rng, s / self.speed  # simulated seconds, so the shape doesn't depend on --speed
+        mu, sig = self.step_base * (1 + 0.25 * min(1.0, t / 120)), 0.18
+        if self.slowdown_at and t > self.slowdown_at:
+            mu, sig = mu * 1.7, 0.4
+        dt = r.lognormvariate(math.log(mu), sig)
+        if s % 300 < 15:
+            dt *= 3.5  # eval
+        if s % 1000 < 3:
+            dt *= 12  # checkpoint
+        if self.straggler and t % 40 < 12 and r.random() < 0.5:
+            dt *= 2.2
+        if r.random() < 0.01:
+            dt += r.expovariate(1 / 0.4)  # data loader hiccup
+        return dt
+
+    def rollouts(self, now):
+        """RL-style generation requests: load swings over a ~60s cycle; TTFT queues up under load."""
+        r = self.rng
+        while self.req_t < now:
+            load = 0.5 + 0.45 * math.sin(self.req_t * 2 * math.pi / 60 + self.lr * 1e4)
+            rate = 6 + 18 * load
+            self.req_t += r.expovariate(rate)
+            queue = r.expovariate(1 / (0.02 + 4 * load**6)) if r.random() < 0.3 + 0.6 * load else 0.0
+            self.ttft_h.observe(r.lognormvariate(math.log(0.03 * (self.batch / 64)), 0.5) + queue)
+            itl = 0.012 * (1 + 1.5 * load) * (self.batch / 64) ** 0.5
+            for _ in range(12):
+                v = r.lognormvariate(math.log(itl), 0.25)
+                if r.random() < 0.004 * (1 + 4 * load):
+                    v *= r.uniform(10, 60)  # preemption
+                self.itl_h.observe(v)
 
     def render(self):
         with self.lock:
@@ -89,12 +142,9 @@ class FakeJob:
             m("accel_memory_used_bytes", "gauge", "Accelerator memory", mem)
             m("accel_temperature_celsius", "gauge", "Accelerator temp", temp)
             m("accel_power_watts", "gauge", "Accelerator power", power)
-            out.append("# HELP train_step_seconds Step time\n# TYPE train_step_seconds histogram")
-            cum = 0
-            for b, c in zip(BUCKETS + ["+Inf"], self.hist):
-                cum += c
-                out.append(f'train_step_seconds_bucket{{le="{b}"}} {cum}')
-            out.append(f"train_step_seconds_sum {self.hist_sum:.4f}\ntrain_step_seconds_count {cum}")
+            out += self.step_h.render("train_step_seconds", "Optimizer step time")
+            out += self.ttft_h.render("rollout_time_to_first_token_seconds", "Rollout TTFT")
+            out += self.itl_h.render("rollout_inter_token_latency_seconds", "Rollout ITL (12 tokens sampled per request)")
             out.append(f"process_resident_memory_bytes {int(2e9 + r.random() * 1e8)}")
             return "\n".join(out) + "\n"
 
