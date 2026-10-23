@@ -68,7 +68,7 @@ h2 small { color: var(--moss); }
 .ptitle button { padding: 0 6px; }
 .plot { position: relative; flex: 1; margin-top: 6px; border: 3px solid var(--bark-d); background: var(--sky); min-height: 0; cursor: crosshair; }
 .plot canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
-.tip { position: absolute; pointer-events: none; z-index: 5; background: var(--paper); border: 3px solid var(--bark-d);
+.tip { position: absolute; left: 0; top: 0; pointer-events: none; will-change: transform; z-index: 5; background: var(--paper); border: 3px solid var(--bark-d);
   box-shadow: 3px 3px 0 var(--ink); font-size: 11px; padding: 3px 5px; white-space: nowrap; display: none; }
 .tip i { display: inline-block; width: 9px; height: 9px; border: 1px solid #000; margin-right: 4px; }
 #empty { grid-column: 1 / -1; padding: 40px; text-align: center; font-size: 22px; color: var(--fur-l); text-shadow: 3px 3px 0 var(--ink); }
@@ -170,6 +170,14 @@ function color(name) {
   if (!c) { const i = colorCache.size; c = i < RUN_COLORS.length ? RUN_COLORS[i] : `hsl(${(i * 137.508) % 360},${80 + (i % 3) * 10}%,${36 + (i % 4) * 6}%)`; colorCache.set(name, c); }
   return c;
 }
+const rgbaCache = new Map(), rgbaCtx = document.createElement("canvas").getContext("2d", { willReadFrequently: true });
+function rgba(css) {
+  let v = rgbaCache.get(css);
+  if (v === undefined) { rgbaCtx.clearRect(0, 0, 1, 1); rgbaCtx.fillStyle = css; rgbaCtx.fillRect(0, 0, 1, 1); const p = rgbaCtx.getImageData(0, 0, 1, 1).data;
+    v = new Uint32Array(new Uint8ClampedArray([p[0], p[1], p[2], 255]).buffer)[0]; rgbaCache.set(css, v); }
+  return v;
+}
+const SKY = rgba(PAL.sky), GRID = rgba("#6f9aa3");
 const api = (path, body, signal) => fetch(path, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal } : { signal });
 const debounce = (f, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => f(...a), ms); }; };
 const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -268,23 +276,26 @@ class Chart {
     this.g = this.base.getContext("2d", { alpha: false }); this.o = this.over.getContext("2d");
     this.data = null; this.dirty = true; this.visible = false; this.loading = false; this.last = 0; this.mouse = null; this.drag = null;
     this.over.addEventListener("mousemove", (e) => { this.mouse = this.pos(e); if (this.drag) this.drag.x1 = this.mouse.x; this.hover(); });
-    this.over.addEventListener("mouseleave", () => { this.mouse = null; this.hover(); });
-    this.over.addEventListener("mousedown", (e) => { const p = this.pos(e); this.drag = { x0: p.x, x1: p.x }; });
-    window.addEventListener("mouseup", () => { if (!this.drag) return; const d = this.drag; this.drag = null;
-      if (Math.abs(d.x1 - d.x0) > 3 && this.data) { const a = this.xv(Math.min(d.x0, d.x1)), b = this.xv(Math.max(d.x0, d.x1)); setView({ x0: a, x1: b }); } else this.hover(); });
+    this.over.addEventListener("mouseleave", () => { this.mouse = null; this.rect = null; this.hover(); });
+    this.over.addEventListener("mouseenter", () => { this.rect = null; });
+    this.over.addEventListener("mousedown", (e) => { const p = this.pos(e); this.drag = { x0: p.x, x1: p.x }; dragging = this; });
     this.over.addEventListener("dblclick", () => setView(null));
   }
-  pos(e) { const r = this.over.getBoundingClientRect(); return { x: (e.clientX - r.left) / PX, y: (e.clientY - r.top) / PX }; }
-  resize() {
-    const w = Math.max(40, Math.floor(this.plot.clientWidth / PX)), h = Math.max(30, Math.floor(this.plot.clientHeight / PX));
+  pos(e) { const r = this.rect || (this.rect = this.over.getBoundingClientRect()); return { x: (e.clientX - r.left) / PX, y: (e.clientY - r.top) / PX }; }
+  // Sizes come from ResizeObserver entries, so nothing here ever forces layout.
+  setSize(cssW, cssH) {
+    const w = Math.max(40, Math.floor(cssW / PX)), h = Math.max(30, Math.floor(cssH / PX));
+    this.cssW = cssW; this.rect = null;
     if (w === this.W && h === this.H) return false;
-    this.W = this.base.width = this.over.width = w; this.H = this.base.height = this.over.height = h; return true;
+    this.W = this.base.width = this.over.width = w; this.H = this.base.height = this.over.height = h;
+    this.img = this.buf = null;
+    return true;
   }
   xp(x) { const d = this.data; return M.l + (x - d.x0) / (d.x1 - d.x0) * (this.W - M.l - M.r); }
   yp(y) { const d = this.data; return this.H - M.b - (y - d.y0) / (d.y1 - d.y0) * (this.H - M.t - M.b); }
   xv(px) { const d = this.data; return d.x0 + (px - M.l) / (this.W - M.l - M.r) * (d.x1 - d.x0); }
   async load() {
-    this.loading = true; this.dirty = false; this.last = performance.now(); this.resize();
+    this.loading = true; this.dirty = false; this.last = performance.now();
     this.ctl?.abort(); this.ctl = new AbortController();
     const body = { runs: [...S.picked], key: this.key, width: this.W - M.l - M.r, smooth: S.smooth };
     if (S.view) { body.x0 = S.view.x0; body.x1 = S.view.x1; }
@@ -294,42 +305,50 @@ class Chart {
       const t0 = performance.now(), buf = await (await api("/api/plot", body, this.ctl.signal)).arrayBuffer(), t1 = performance.now();
       const jl = new DataView(buf).getUint32(0, true), meta = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, jl)));
       let off = 4 + jl; const series = [];
-      for (const r of meta.runs) { if (r.n) { series.push({ name: r.name, color: color(r.name), xs: new Float32Array(buf, off, r.n), ys: new Float32Array(buf, off + r.n * 4, r.n) }); } off += r.n * 8; }
+      for (const r of meta.runs) { if (r.n) { const c = color(r.name); series.push({ name: r.name, color: c, rgba: rgba(c), xs: new Float32Array(buf, off, r.n), ys: new Float32Array(buf, off + r.n * 4, r.n) }); } off += r.n * 8; }
       const pad = (meta.y1 - meta.y0) * 0.06 || Math.abs(meta.y1) * 0.1 || 1;
       this.data = { x0: meta.x0, x1: meta.x1, y0: meta.y0 - pad, y1: meta.y1 + pad, series, missing: meta.runs.length - series.length };
-      this.draw();
-      perf.note(this.key, t1 - t0, performance.now() - t1, buf.byteLength);
+      const t2 = performance.now(); this.draw();
+      perf.note(this.key, t1 - t0, performance.now() - t2, buf.byteLength);
     } catch (e) { if (e.name !== "AbortError") { console.error(e); this.dirty = true; } }
     finally { this.loading = false; }
   }
   draw() {
-    const g = this.g, d = this.data, W = this.W, H = this.H; if (!d) return;
-    g.fillStyle = PAL.sky; g.fillRect(0, 0, W, H);
-    g.fillStyle = "#f6e7a6"; g.fillRect(0, 0, M.l, H); g.fillRect(0, H - M.b, W, M.b);
-    g.font = "8px monospace"; g.textBaseline = "middle"; g.lineWidth = 1;
-    const time = !S.xkey;
-    g.fillStyle = "rgba(59,35,16,.28)"; g.textAlign = "center";
-    for (const v of ticks(d.x0, d.x1, Math.max(2, (W - M.l) / 45), time)) { const x = Math.round(this.xp(v)); if (x < M.l || x > W - M.r) continue;
-      g.fillStyle = "rgba(59,35,16,.28)"; for (let y = M.t; y < H - M.b; y += 4) g.fillRect(x, y, 1, 2);
-      g.fillStyle = PAL.barkD; g.fillText(time ? fmtT(v) : fmtV(v), x, H - M.b / 2); }
-    g.textAlign = "right";
-    for (const v of ticks(d.y0, d.y1, Math.max(2, (H - M.b) / 22), false)) { const y = Math.round(this.yp(v)); if (y < M.t || y > H - M.b) continue;
-      g.fillStyle = "rgba(59,35,16,.28)"; for (let x = M.l; x < W - M.r; x += 4) g.fillRect(x, y, 2, 1);
-      g.fillStyle = PAL.barkD; g.fillText(fmtV(v), M.l - 2, y); }
-    g.save(); g.beginPath(); g.rect(M.l, M.t, W - M.l - M.r, H - M.t - M.b); g.clip();
-    const ax = (W - M.l - M.r) / (d.x1 - d.x0), bx = M.l - d.x0 * ax, ay = -(H - M.t - M.b) / (d.y1 - d.y0), by = H - M.b - d.y0 * ay;
+    const g = this.g, d = this.data, W = this.W, H = this.H; if (!d || !W) return;
+    if (!this.img) { if (W - M.l - M.r <= 0 || H - M.t - M.b <= 0) return; this.img = new ImageData(W - M.l - M.r, H - M.t - M.b); this.buf = new Uint32Array(this.img.data.buffer); }
+    // Plot area: grid and lines rasterized into a persistent pixel buffer (no readback).
+    // On an integer grid stepped lines are only horizontal/vertical spans: fill() and a strided loop.
+    const pw = W - M.l - M.r, ph = H - M.t - M.b, buf = this.buf, time = !S.xkey;
+    buf.fill(SKY);
+    g.font = "8px monospace";
+    const xlab = (v) => time ? fmtT(v) : fmtV(v);
+    let xt = ticks(d.x0, d.x1, Math.max(2, pw / 45), time);
+    const lw = xt.reduce((m, v) => Math.max(m, g.measureText(xlab(v)).width), 0);
+    if (xt.length > 1 && lw + 6 > pw / xt.length) xt = ticks(d.x0, d.x1, Math.max(1, pw / (lw + 10)), time);
+    const yt = ticks(d.y0, d.y1, Math.max(2, (H - M.b) / 22), false);
+    const ax = pw / (d.x1 - d.x0), bx = -d.x0 * ax, ay = -ph / (d.y1 - d.y0), by = ph - d.y0 * ay;
+    for (const v of xt) { const x = Math.round(v * ax + bx); if (x < 0 || x >= pw) continue; for (let y = 0; y < ph; y += 4) { buf[y * pw + x] = GRID; if (y + 1 < ph) buf[(y + 1) * pw + x] = GRID; } }
+    for (const v of yt) { const y = Math.round(v * ay + by); if (y < 0 || y >= ph) continue; const o = y * pw; for (let x = 0; x < pw; x += 4) { buf[o + x] = GRID; if (x + 1 < pw) buf[o + x + 1] = GRID; } }
     for (const s of d.series) {
-      const xs = s.xs, ys = s.ys, n = xs.length; if (!n) continue;
-      g.strokeStyle = s.color; g.beginPath();
-      let px = Math.round(xs[0] * ax + bx), py = Math.round(ys[0] * ay + by); g.moveTo(px, py);
-      for (let i = 1; i < n; i++) { const x = Math.round(xs[i] * ax + bx), y = Math.round(ys[i] * ay + by);
-        if (x !== px) { g.lineTo(x, py); px = x; } if (y !== py) { g.lineTo(x, y); py = y; } }
-      g.stroke();
+      const xs = s.xs, ys = s.ys, n = xs.length, c = s.rgba;
+      let px = Math.round(xs[0] * ax + bx), py = Math.round(ys[0] * ay + by);
+      if (px >= 0 && px < pw && py >= 0 && py < ph) buf[py * pw + px] = c;
+      for (let i = 1; i < n; i++) {
+        const x = Math.round(xs[i] * ax + bx), y = Math.round(ys[i] * ay + by);
+        if (x !== px) { if (py >= 0 && py < ph) { const lo = Math.max(0, Math.min(px, x)), hi = Math.min(pw - 1, Math.max(px, x)); if (lo <= hi) buf.fill(c, py * pw + lo, py * pw + hi + 1); } px = x; }
+        if (y !== py) { if (x >= 0 && x < pw) { const hi = Math.min(ph - 1, Math.max(py, y)); for (let yy = Math.max(0, Math.min(py, y)), o = yy * pw + x; yy <= hi; yy++, o += pw) buf[o] = c; } py = y; }
+      }
     }
-    g.restore();
+    g.putImageData(this.img, M.l, M.t);
+    // Margins and labels with the canvas API.
+    g.fillStyle = "#f6e7a6"; g.fillRect(0, 0, M.l, H); g.fillRect(0, H - M.b, W, M.b); g.fillRect(W - M.r, 0, M.r, H); g.fillRect(0, 0, W, M.t);
+    g.font = "8px monospace"; g.textBaseline = "middle"; g.fillStyle = PAL.barkD; g.textAlign = "center";
+    for (const v of xt) { const x = Math.round(this.xp(v)); if (x >= M.l && x <= W - M.r) g.fillText(xlab(v), x, H - M.b / 2); }
+    g.textAlign = "right";
+    for (const v of yt) { const y = Math.round(this.yp(v)); if (y >= M.t && y <= H - M.b) g.fillText(fmtV(v), M.l - 2, y); }
     const lack = d.missing ? ` \u00b7 ${d.missing} w/o data` : "";
-    this.info.textContent = `${d.series.length} runs${lack}`;
-    this.hover();
+    const info = `${d.series.length} runs${lack}`; if (this.info.textContent !== info) this.info.textContent = info;
+    if (this.mouse) this.hover();
   }
   // Overlay only: crosshair, highlighted nearest run, tooltip. Never touches the data layer.
   hover() {
@@ -337,27 +356,41 @@ class Chart {
     this.hoverRaf = requestAnimationFrame(() => {
       this.hoverRaf = 0; const o = this.o, d = this.data; o.clearRect(0, 0, this.W, this.H);
       if (this.drag) { o.fillStyle = "rgba(244,154,184,.45)"; o.fillRect(Math.min(this.drag.x0, this.drag.x1), M.t, Math.abs(this.drag.x1 - this.drag.x0), this.H - M.t - M.b); }
-      if (!d || !this.mouse || this.mouse.x < M.l) { this.tip.style.display = "none"; return; }
-      const xv = this.xv(this.mouse.x), my = this.mouse.y, near = [];
-      for (const s of d.series) { const xs = s.xs; let lo = 0, hi = xs.length; while (lo < hi) { const m = (lo + hi) >> 1; if (xs[m] <= xv) lo = m + 1; else hi = m; }
-        if (lo === 0) continue; const v = s.ys[lo - 1]; near.push({ s, v, dist: Math.abs(this.yp(v) - my) }); }
-      near.sort((a, b) => a.dist - b.dist);
-      o.fillStyle = PAL.barkD; o.fillRect(Math.round(this.mouse.x), M.t, 1, this.H - M.t - M.b);
-      const top = near[0];
-      if (top) { const s = top.s; o.save(); o.beginPath(); o.rect(M.l, M.t, this.W - M.l - M.r, this.H - M.t - M.b); o.clip();
-        o.lineWidth = 3; o.strokeStyle = "#000"; this.path(o, s); o.stroke(); o.lineWidth = 1; o.strokeStyle = s.color; this.path(o, s); o.stroke(); o.restore();
-        o.fillStyle = "#000"; o.fillRect(Math.round(this.mouse.x) - 2, Math.round(this.yp(top.v)) - 2, 5, 5); o.fillStyle = s.color; o.fillRect(Math.round(this.mouse.x) - 1, Math.round(this.yp(top.v)) - 1, 3, 3); }
-      const rows = near.slice(0, 8).map((n) => `<div><i style="background:${n.s.color}"></i>${esc(n.s.name)}: ${fmtV(n.v)}</div>`).join("");
-      this.tip.innerHTML = `<div>${S.xkey ? fmtV(xv) : "t=" + fmtT(xv)}${near.length > 8 ? ` \u00b7 +${near.length - 8} more` : ""}</div>${rows}`;
-      this.tip.style.display = "block";
-      const left = this.mouse.x * PX + 14, pw = this.plot.clientWidth;
-      this.tip.style.left = (left + 260 > pw ? Math.max(0, this.mouse.x * PX - 14 - this.tip.offsetWidth) : left) + "px"; this.tip.style.top = "4px";
+      if (!d || !this.mouse || this.mouse.x < M.l) { if (this.tipOn) { this.tip.style.display = "none"; this.tipOn = false; } return; }
+      // Top-K nearest by screen distance in one pass, no allocation per series.
+      const K = 8, xv = this.xv(this.mouse.x), my = this.mouse.y, ph = this.H - M.t - M.b, ay = -ph / (d.y1 - d.y0), by = this.H - M.b - d.y0 * ay;
+      const topS = new Array(K), topV = new Float64Array(K), topD = new Float64Array(K).fill(Infinity); let count = 0;
+      for (const s of d.series) {
+        const xs = s.xs; let lo = 0, hi = xs.length; while (lo < hi) { const m = (lo + hi) >> 1; if (xs[m] <= xv) lo = m + 1; else hi = m; }
+        if (lo === 0) continue; count++;
+        const v = s.ys[lo - 1], dist = Math.abs(v * ay + by - my);
+        if (dist >= topD[K - 1]) continue;
+        let j = K - 1; while (j > 0 && topD[j - 1] > dist) { topD[j] = topD[j - 1]; topV[j] = topV[j - 1]; topS[j] = topS[j - 1]; j--; }
+        topD[j] = dist; topV[j] = v; topS[j] = s;
+      }
+      o.fillStyle = PAL.barkD; o.fillRect(Math.round(this.mouse.x), M.t, 1, ph);
+      const s = topS[0];
+      if (s) { o.save(); o.beginPath(); o.rect(M.l, M.t, this.W - M.l - M.r, ph); o.clip();
+        this.path(o, s); o.lineWidth = 3; o.strokeStyle = "#000"; o.stroke(); o.lineWidth = 1; o.strokeStyle = s.color; o.stroke(); o.restore();
+        const yy = Math.round(this.yp(topV[0])), xx = Math.round(this.mouse.x);
+        o.fillStyle = "#000"; o.fillRect(xx - 2, yy - 2, 5, 5); o.fillStyle = s.color; o.fillRect(xx - 1, yy - 1, 3, 3); }
+      let html = `<div>${S.xkey ? fmtV(xv) : "t=" + fmtT(xv)}${count > K ? ` \u00b7 +${count - K} more` : ""}</div>`;
+      for (let i = 0; i < K && topS[i]; i++) html += `<div><i style="background:${topS[i].color}"></i>${esc(topS[i].name)}: ${fmtV(topV[i])}</div>`;
+      this.tip.innerHTML = html;
+      if (!this.tipOn) { this.tip.style.display = "block"; this.tipOn = true; }
+      const cx = this.mouse.x * PX, flip = cx > this.cssW / 2;
+      this.tip.style.transform = `translate(${flip ? cx - 14 : cx + 14}px,4px)${flip ? " translateX(-100%)" : ""}`;
     });
   }
+  endDrag() { const d = this.drag; this.drag = null; if (!d) return;
+    if (Math.abs(d.x1 - d.x0) > 3 && this.data) { const a = this.xv(Math.min(d.x0, d.x1)), b = this.xv(Math.max(d.x0, d.x1)); setView({ x0: a, x1: b }); } else this.hover(); }
   path(o, s) { const xs = s.xs, ys = s.ys; o.beginPath(); let py = this.yp(ys[0]); o.moveTo(this.xp(xs[0]), py);
     for (let i = 1; i < xs.length; i++) { const x = this.xp(xs[i]), y = this.yp(ys[i]); o.lineTo(x, py); o.lineTo(x, y); py = y; } }
-  destroy() { this.ctl?.abort(); }
+  destroy() { this.ctl?.abort(); cancelAnimationFrame(this.hoverRaf); this.data = null; if (dragging === this) dragging = null; }
 }
+// One window listener for drag-zoom, not one per chart.
+let dragging = null;
+window.addEventListener("mouseup", () => { const c = dragging; dragging = null; c?.endDrag(); });
 
 // One scheduler for every chart: visible + dirty charts load, a few at a time, throttled per chart.
 const SCHED = { running: 0, max: 6, minGap: 900, timer: 0 };
@@ -365,7 +398,7 @@ function pump() {
   const now = performance.now(); let wait = Infinity;
   for (const c of charts.values()) {
     if (SCHED.running >= SCHED.max) break;
-    if (!c.dirty || !c.visible || c.loading) continue;
+    if (!c.dirty || !c.visible || c.loading || !c.W) continue;
     const gap = SCHED.minGap - (now - c.last);
     if (gap > 0 && c.data) { wait = Math.min(wait, gap); continue; }
     SCHED.running++; c.load().finally(() => { SCHED.running--; pump(); });
@@ -374,8 +407,11 @@ function pump() {
 }
 function invalidate(force) { for (const c of charts.values()) { c.dirty = true; if (force) c.last = 0; } pump(); }
 function setView(v) { S.view = v; invalidate(true); }
-const vis = new IntersectionObserver((ents) => { for (const e of ents) { const c = e.target._chart; c.visible = e.isIntersecting; } pump(); }, { root: $("#panels"), rootMargin: "300px" });
-const ro = new ResizeObserver((ents) => { for (const e of ents) { const c = e.target.closest(".panel")._chart; if (c.resize()) { c.dirty = true; c.last = 0; c.draw(); } } pump(); });
+// Offscreen charts drop their pixel buffer; it is rebuilt on the next draw.
+const vis = new IntersectionObserver((ents) => { for (const e of ents) { const c = e.target._chart; c.visible = e.isIntersecting; if (!c.visible) c.img = c.buf = null; } pump(); }, { root: $("#panels"), rootMargin: "300px" });
+const ro = new ResizeObserver((ents) => { for (const e of ents) { const c = e.target.parentElement._chart, r = e.contentRect;
+  if (c && c.setSize(r.width, r.height)) { c.dirty = true; c.last = 0; c.draw(); } } pump(); });
+$("#panels").addEventListener("scroll", () => { for (const c of charts.values()) c.rect = null; }, { passive: true });
 
 S.panelSet = new Set(S.panels);
 function addPanels(keys) {
@@ -395,7 +431,7 @@ function addPanels(keys) {
   $("#empty").style.display = S.panels.length ? "none" : ""; save(); keyList.schedule(true); pump();
 }
 function removePanel(key) {
-  const c = charts.get(key); if (!c) return; c.destroy(); vis.unobserve(c.panel); c.panel.remove(); charts.delete(key);
+  const c = charts.get(key); if (!c) return; c.destroy(); vis.unobserve(c.panel); ro.unobserve(c.plot); c.panel.remove(); charts.delete(key);
   S.panels = S.panels.filter((k) => k !== key); S.panelSet.delete(key); $("#empty").style.display = S.panels.length ? "none" : ""; save(); keyList.schedule(true);
 }
 const picksChanged = debounce(() => { invalidate(true); refreshKeys(); }, 150);

@@ -15,9 +15,14 @@ fn rows_for(config: &str, fixture: &str) -> Vec<niu_lai_writer::Row> {
 fn dcgm_example() {
     let rows = rows_for("dcgm.toml", "dcgm.txt");
     assert!(!rows.is_empty());
-    assert!(rows.iter().all(|r| r.metric_name.starts_with("gpu_") && !r.metric_name.contains("UUID")));
+    assert!(rows
+        .iter()
+        .all(|r| r.metric_name.starts_with("gpu_") && !r.metric_name.contains("UUID")));
     assert!(rows.iter().any(|r| r.metric_name == "gpu_GPU_UTIL"));
-    let r = rows.iter().find(|r| r.extras.contains(&("gpu".into(), "0".into()))).unwrap();
+    let r = rows
+        .iter()
+        .find(|r| r.extras.contains(&("gpu".into(), "0".into())))
+        .unwrap();
     assert!(r.extras.contains(&("role".into(), "prefill".into())));
 }
 
@@ -25,7 +30,9 @@ fn dcgm_example() {
 fn node_exporter_example() {
     let rows = rows_for("node-exporter.toml", "node-exporter.txt");
     assert!(!rows.is_empty());
-    assert!(rows.iter().all(|r| !r.metric_name.starts_with("node_") && !r.metric_name.starts_with("cpu")));
+    assert!(rows
+        .iter()
+        .all(|r| !r.metric_name.starts_with("node_") && !r.metric_name.starts_with("cpu")));
 }
 
 #[test]
