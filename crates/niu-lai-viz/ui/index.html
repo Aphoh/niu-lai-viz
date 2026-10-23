@@ -668,6 +668,7 @@ class HistChart extends Chart {
     let lo = Infinity, hi = -Infinity;
     for (const r of d.runs) for (const c of r.counts) { if (!c) continue; let tot = 0; for (const v of c) tot += v;
       for (const v0 of c) { const v = d.share ? v0 / (tot || 1) : v0 / d.dt; if (v > 0) { if (v < lo) lo = v; if (v > hi) hi = v; } } }
+    if (lo < hi * 1e-3) lo = hi * 1e-3; // 3 decades: interpolated slivers must not stretch the scale
     d.lmin = Math.log(lo === Infinity ? 1 : lo); d.lmax = Math.log(hi === -Infinity ? 2 : hi);
   }
   drawNow() {
