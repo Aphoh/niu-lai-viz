@@ -48,7 +48,7 @@ h1 { margin: 0; font: 900 40px/1 Impact, "Arial Black", sans-serif; letter-spaci
 #live.on { color: #ff2a00; background: #000; animation: blink 1s steps(2) infinite; }
 @keyframes blink { 50% { color: var(--fur); } }
 main { flex: 1; display: flex; gap: 10px; padding: 0 8px 8px; min-height: 0; }
-aside { width: 330px; flex: none; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+aside { width: 330px; min-width: 240px; max-width: 75vw; flex: none; display: flex; flex-direction: column; gap: 10px; min-height: 0; resize: horizontal; overflow: hidden; padding-right: 6px; }
 aside > section { padding: 8px; display: flex; flex-direction: column; gap: 6px; min-height: 0; }
 #runs-sec { flex: 1.1; } #metrics-sec { flex: 1; }
 h2 { margin: 0; font-size: 14px; text-transform: uppercase; color: var(--fur-l); background: var(--bark); padding: 2px 6px;
@@ -588,6 +588,9 @@ $("#panels").addEventListener("scroll", (e) => {
 function setSide(hidden) { document.body.classList.toggle("noside", hidden); $("#sidetog").textContent = hidden ? "▶" : "◀"; localStorage.setItem("niu.noside", JSON.stringify(hidden)); }
 $("#sidetog").onclick = () => setSide(!document.body.classList.contains("noside"));
 setSide(ls("noside", false));
+// Sidebar is drag-resizable (bottom-right corner) so long metric names fit; width is remembered.
+{ const side = $("aside"), w = ls("sidew", 0); if (w) side.style.width = w + "px";
+  new ResizeObserver(() => { if (side.offsetWidth) localStorage.setItem("niu.sidew", side.offsetWidth); }).observe(side); }
 
 S.panelSet = new Set(S.panels);
 function addPanels(keys, scroll) {
