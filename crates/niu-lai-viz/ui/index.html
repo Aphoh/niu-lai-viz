@@ -127,6 +127,9 @@ body.chat-open #chat { display: flex; }
 #chatcfg { display: none; flex-direction: column; gap: 4px; font-size: 12px; } #chat.cfg #chatcfg { display: flex; }
 #chatcfg label { display: flex; justify-content: space-between; gap: 6px; align-items: center; } #chatcfg input, #chatcfg select { width: 290px; }
 #chatcfg small { color: var(--bark); font-weight: normal; }
+#dash { display: flex; gap: 4px; align-items: center; } #dash select { max-width: 150px; } #dash button { padding: 0 5px; }
+#empty pre { text-align: left; display: inline-block; font-size: 12px; background: var(--paper); color: var(--ink); text-shadow: none; padding: 8px 10px; border: 3px solid var(--bark-d); white-space: pre-wrap; max-width: 90%; }
+#empty small { display: block; font-size: 12px; margin-top: 6px; }
 #perf { position: fixed; right: 8px; bottom: 4px; font-size: 10px; color: var(--fur-l); text-shadow: 1px 1px 0 #000; pointer-events: none; }
 ::-webkit-scrollbar { width: 14px; } ::-webkit-scrollbar-thumb { background: var(--snout); border: 3px solid var(--snout-d); }
 ::-webkit-scrollbar-track { background: var(--fur-d); }
@@ -151,6 +154,7 @@ body.chat-open #chat { display: flex; }
     <input id="xkey" type="text" placeholder="trainer/train_step">
     <button id="unzoom" title="or double-click a chart">unzoom</button>
   </div>
+  <div id="dash" class="pit"><label>DASH</label><select id="dsel" title="dashboards saved on this server"></select><button id="dsave" title="save this dashboard">save</button><button id="dsaveas" title="save as a new dashboard">as…</button><button id="dlink" title="copy a link that opens this dashboard">link</button><button id="ddel" title="delete this dashboard">del</button></div>
   <div id="live" class="pit">OFFLINE</div>
 </header>
 <main>
@@ -379,6 +383,7 @@ async function refreshRuns() {
   for (const r of runs) r._lab = Object.entries(r.labels).map(([k, v]) => `${k}=${v}`).join(" ");
   [...runs].sort((a, b) => a.started_at_ms - b.started_at_ms || (a.name < b.name ? -1 : 1)).forEach((r) => color(r.name));
   S.runs = runs; S.runByName = new Map(runs.map((r) => [r.name, r])); S.namer = namer(runs.map((r) => r.name));
+  if (!runs.length) showNoRuns(); else if ($("#empty").dataset.noruns) { delete $("#empty").dataset.noruns; $("#empty").innerHTML = `<canvas class="niu" width="28" height="28"></canvas>pick runs, then click a metric. moo.`; drawNiu($("#empty canvas")); }
   if (S.firstLoad && runs.length) { runs.slice(0, 50).forEach((r) => S.picked.add(r.name)); S.firstLoad = false; save(); }
   for (const n of [...S.picked]) if (!S.runByName.has(n)) S.picked.delete(n);
   filterRuns();
@@ -1066,11 +1071,80 @@ $("#chatin").onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.prev
     for (const [i2, k2] of Object.entries(f)) S.llm[k2] = $("#" + i2).value.trim(); saveLlm(); }; } }
 if (!S.llm.key) $("#chat").classList.add("cfg");
 
+// ---------- dashboards: named, server-side (<root>/.dashboards), versioned; /?d=<name> opens one ----------
+S.dash = null; // { name, version } of the loaded dashboard
+function dashState() {
+  const only = (o) => Object.fromEntries(Object.entries(o).filter(([k]) => S.panelSet.has(k)));
+  return { panels: [...S.panels], titles: only(S.titles), yopt: only(S.yopt), hsel: only(S.hsel), wide: S.panels.filter((k) => S.wide.has(k)),
+    align: S.align, xkey: S.xkey, smooth: S.smooth, picked: [...S.picked] };
+}
+async function refreshDashes() {
+  const list = await (await api("/api/dashboards")).json(), sel = $("#dsel"), cur = S.dash?.name;
+  sel.innerHTML = `<option value="">— unsaved —</option>` + list.map((d) => `<option value="${esc(d.name)}">${esc(d.name)}</option>`).join("");
+  sel.value = list.some((d) => d.name === cur) ? cur : ""; return list;
+}
+function setDashUrl() { const u = new URL(location.href); S.dash ? u.searchParams.set("d", S.dash.name) : u.searchParams.delete("d"); history.replaceState(null, "", u); }
+async function loadDash(name) {
+  const r = await api("/api/dashboards/" + encodeURIComponent(name)); if (!r.ok) return { error: (await r.json()).error };
+  const d = await r.json(), st = d.state || {};
+  for (const k of [...S.panels]) removePanel(k);
+  for (const k of st.panels || []) { delete S.yopt[k]; delete S.hsel[k]; }
+  Object.assign(S.titles, st.titles || {}); Object.assign(S.yopt, st.yopt || {}); Object.assign(S.hsel, st.hsel || {}); for (const k of st.wide || []) S.wide.add(k);
+  if (st.align) S.align = st.align; S.xkey = st.xkey || ""; S.smooth = st.smooth || 0;
+  $("#amode").value = S.align.mode; $("#akey").value = S.align.key; $("#aval").value = S.align.above;
+  $("#xmode").value = S.xkey ? "metric" : "time"; $("#xkey").value = S.xkey; $("#smooth").value = S.smooth; $("#smoothv").textContent = S.smooth.toFixed(2);
+  const picks = (st.picked || []).filter((n) => S.runByName.has(n)); if (picks.length) S.picked = new Set(picks);
+  S.dash = { name, version: d.version }; save(); filterRuns(); await refreshKeys(); addPanels(st.panels || []); S.view = null; invalidate(true);
+  await refreshDashes(); setDashUrl(); return { loaded: name, charts: S.panels.length, picked: S.picked.size, missing_runs: (st.picked || []).length - picks.length };
+}
+async function saveDash(name, force = false) {
+  const base = S.dash?.name === name ? S.dash.version : null;
+  const r = await fetch("/api/dashboards/" + encodeURIComponent(name), { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ base_version: base, force, state: dashState() }) });
+  const d = await r.json();
+  if (r.status === 409) return { conflict: d.error, version: d.version };
+  if (!r.ok) return { error: d.error };
+  S.dash = { name, version: d.version }; await refreshDashes(); setDashUrl(); return { saved: name, version: d.version };
+}
+async function saveDashUi(name) {
+  let r = await saveDash(name);
+  if (r.conflict && confirm(`"${name}": ${r.conflict}. overwrite?`)) r = await saveDash(name, true);
+  if (r.error) alert(r.error); else if (r.saved) flash($("#dsave"), "saved"); return r;
+}
+function flash(btn, text) { const t = btn.textContent; btn.textContent = text; setTimeout(() => (btn.textContent = t), 1200); }
+$("#dsel").onchange = async (e) => { const n = e.target.value; if (n) { const r = await loadDash(n); if (r.error) alert(r.error); } else { S.dash = null; setDashUrl(); } };
+$("#dsave").onclick = () => { if (S.dash) saveDashUi(S.dash.name); else $("#dsaveas").click(); };
+$("#dsaveas").onclick = () => { const n = prompt("dashboard name (letters, digits, space, - _ .)", S.dash?.name || ""); if (n && n.trim()) { if (S.dash?.name !== n.trim()) S.dash = null; saveDashUi(n.trim()); } };
+$("#dlink").onclick = async () => {
+  if (!S.dash) { $("#dsaveas").click(); return; }
+  const url = `${location.origin}/?d=${encodeURIComponent(S.dash.name)}`;
+  try { await navigator.clipboard.writeText(url); flash($("#dlink"), "copied"); } catch { prompt("copy this link", url); }
+};
+$("#ddel").onclick = async () => { if (!S.dash || !confirm(`delete dashboard "${S.dash.name}" for everyone?`)) return;
+  await fetch("/api/dashboards/" + encodeURIComponent(S.dash.name), { method: "DELETE" }); S.dash = null; setDashUrl(); refreshDashes(); };
+TOOLS.push(
+  { name: "list_dashboards", description: "Saved dashboards on this server (shared by everyone using it).", parameters: { type: "object", properties: {} },
+    run: async () => ({ dashboards: await refreshDashes(), current: S.dash?.name || null }) },
+  { name: "save_dashboard", description: "Save the current charts, axis settings, T=0 and picked runs as a named dashboard; returns a shareable link. Fails with conflict if someone else saved that name since it was loaded: then ask the user before overwrite=true.",
+    parameters: { type: "object", properties: { name: { type: "string" }, overwrite: { type: "boolean" } }, required: ["name"] },
+    run: async ({ name, overwrite }) => { const r = await saveDash(name.trim(), !!overwrite); return r.saved ? { ...r, link: `${location.origin}/?d=${encodeURIComponent(r.saved)}` } : r; } },
+  { name: "load_dashboard", description: "Replace the current charts and settings with a saved dashboard.", parameters: { type: "object", properties: { name: { type: "string" } }, required: ["name"] },
+    run: ({ name }) => loadDash(name) });
+TOOL_BY.clear(); for (const t of TOOLS) TOOL_BY.set(t.name, t);
+function showNoRuns() {
+  const el = $("#empty"); if (el.dataset.noruns) return; el.dataset.noruns = "1"; el.style.display = "";
+  el.innerHTML = `<canvas class="niu" width="28" height="28"></canvas>no runs yet. scrape a job's /metrics into this folder:<br>
+<pre>niu-lai-viz scrape --root &lt;this serve's --root&gt; --run my-exp \\
+  --target trainer=http://localhost:8000/metrics \\
+  --label lr=3e-4</pre><small>runs appear here live · more in the README ("Scrape your own job") · or try examples/demo.py</small>`;
+  drawNiu(el.querySelector("canvas"));
+}
 window.niu = { charts, S, frameWork, FRAME_BUDGET, TOOLS }; // for benchmarks and console poking
 drawBackground(); animateNiu($("#logo")); document.querySelectorAll(".niu").forEach(drawNiu);
 (async () => {
   await refreshRuns();
-  await refreshKeys();
+  await refreshKeys(); refreshDashes();
+  const want = new URLSearchParams(location.search).get("d");
+  if (want) { const r = await loadDash(want); if (!r.error) { connect(); return; } alert(`dashboard "${want}": ${r.error}`); }
   const initial = S.panels.length ? S.panels : [...S.keys.filter((k) => /loss|grad_norm|learning_rate|utilization.*gpu=0|eval_acc/.test(k)).slice(0, 5), ...S.hists.slice(0, 1).map((h) => "#" + h)];
   S.panels = []; S.panelSet = new Set(); addPanels(initial);
   connect();

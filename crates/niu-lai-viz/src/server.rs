@@ -4,12 +4,12 @@
 //! run (T=0 anchor or a metric as x-axis), smooths, and min/max-decimates per
 //! pixel column, so response size and draw cost are bounded by chart width
 //! times run count, never by run length. Responses are packed f32 arrays.
-use crate::run::{data_files, now_ms, RunMeta, META_FILE};
+use crate::run::{data_files, is_locked, now_ms, RunMeta, META_FILE};
 use arrow::array::{Array, AsArray, Float64Array, StringArray};
 use arrow::datatypes::{DataType, Float64Type};
 use axum::body::Bytes;
-use axum::extract::State;
-use axum::http::header;
+use axum::extract::{Path as UrlPath, State};
+use axum::http::{header, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
@@ -257,7 +257,9 @@ fn list_runs(root: &Path) -> Vec<RunInfo> {
             }
             let mut meta = RunMeta::read(&e.path())?;
             meta.name = name;
-            let live = meta.is_live(now);
+            // A held flock means a scraper is alive even if its heartbeat lags.
+            let live = meta.is_live(now)
+                || (meta.status == "running" && is_locked(&e.path()) == Some(true));
             if meta.status == "running" && !live {
                 meta.status = "stale".into();
             }
@@ -903,6 +905,154 @@ async fn hist(State(app): State<Shared>, Json(req): Json<HistReq>) -> Response {
     Json(out).into_response()
 }
 
+// ---------- dashboards: <root>/.dashboards/<name>.json, versioned, written under flock ----------
+const DASH_DIR: &str = ".dashboards";
+
+fn dash_name_ok(n: &str) -> bool {
+    !n.is_empty()
+        && n.len() <= 80
+        && !n.starts_with('.')
+        && n.chars().all(|c| c.is_alphanumeric() || "-_. ".contains(c))
+}
+
+#[derive(Serialize, Deserialize)]
+struct Dash {
+    version: u64,
+    saved_at_ms: i64,
+    state: serde_json::Value,
+}
+
+#[derive(Deserialize)]
+struct DashPut {
+    /// Version the client loaded (`null`: creating a new dashboard).
+    base_version: Option<u64>,
+    /// Overwrite even if someone saved since `base_version`.
+    #[serde(default)]
+    force: bool,
+    state: serde_json::Value,
+}
+
+fn read_dash(p: &Path) -> Option<Dash> {
+    serde_json::from_slice(&std::fs::read(p).ok()?).ok()
+}
+
+/// Run `f` holding an exclusive flock on `.dashboards/.lock`.
+fn with_dash_lock<T>(root: &Path, f: impl FnOnce(&Path) -> T) -> std::io::Result<T> {
+    let dir = root.join(DASH_DIR);
+    std::fs::create_dir_all(&dir)?;
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join(".lock"))?;
+    lock.lock()?;
+    Ok(f(&dir))
+}
+
+fn err(code: StatusCode, msg: impl ToString) -> Response {
+    (code, Json(serde_json::json!({ "error": msg.to_string() }))).into_response()
+}
+
+async fn dash_list(State(app): State<Shared>) -> Response {
+    let dir = app.root.join(DASH_DIR);
+    let mut out: Vec<serde_json::Value> = std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let file = e.file_name().to_string_lossy().to_string();
+            let name = file.strip_suffix(".json")?;
+            let d = dash_name_ok(name).then(|| read_dash(&e.path()))??;
+            Some(serde_json::json!({ "name": name, "version": d.version, "saved_at_ms": d.saved_at_ms }))
+        })
+        .collect();
+    out.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+    Json(out).into_response()
+}
+
+async fn dash_get(State(app): State<Shared>, UrlPath(name): UrlPath<String>) -> Response {
+    if !dash_name_ok(&name) {
+        return err(StatusCode::BAD_REQUEST, "bad dashboard name");
+    }
+    match read_dash(&app.root.join(DASH_DIR).join(format!("{name}.json"))) {
+        Some(d) => Json(serde_json::json!({
+            "name": name, "version": d.version, "saved_at_ms": d.saved_at_ms, "state": d.state
+        }))
+        .into_response(),
+        None => err(StatusCode::NOT_FOUND, "no such dashboard"),
+    }
+}
+
+async fn dash_put(
+    State(app): State<Shared>,
+    UrlPath(name): UrlPath<String>,
+    Json(req): Json<DashPut>,
+) -> Response {
+    if !dash_name_ok(&name) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "dashboard names: letters, digits, space, - _ . (max 80)",
+        );
+    }
+    let root = app.root.clone();
+    let res = tokio::task::spawn_blocking(move || {
+        with_dash_lock(&root, |dir| -> std::io::Result<Result<u64, Option<u64>>> {
+            let path = dir.join(format!("{name}.json"));
+            let cur = read_dash(&path).map(|d| d.version);
+            if !req.force && req.base_version != cur {
+                return Ok(Err(cur));
+            }
+            let d = Dash {
+                version: cur.unwrap_or(0) + 1,
+                saved_at_ms: now_ms(),
+                state: req.state,
+            };
+            let tmp = dir.join(format!(".{name}.json.tmp"));
+            std::fs::write(&tmp, serde_json::to_vec_pretty(&d)?)?;
+            std::fs::rename(&tmp, &path)?;
+            Ok(Ok(d.version))
+        })
+    })
+    .await;
+    match res {
+        Ok(Ok(Ok(Ok(version)))) => Json(serde_json::json!({ "version": version })).into_response(),
+        Ok(Ok(Ok(Err(cur)))) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": match cur {
+                    Some(_) => "saved by someone else since you loaded it",
+                    None => "it was deleted since you loaded it",
+                },
+                "version": cur,
+            })),
+        )
+            .into_response(),
+        Ok(Ok(Err(e))) | Ok(Err(e)) => err(StatusCode::INTERNAL_SERVER_ERROR, e),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+async fn dash_del(State(app): State<Shared>, UrlPath(name): UrlPath<String>) -> Response {
+    if !dash_name_ok(&name) {
+        return err(StatusCode::BAD_REQUEST, "bad dashboard name");
+    }
+    let root = app.root.clone();
+    let res = tokio::task::spawn_blocking(move || {
+        with_dash_lock(&root, |dir| {
+            std::fs::remove_file(dir.join(format!("{name}.json")))
+        })
+    })
+    .await;
+    match res {
+        Ok(Ok(Ok(()))) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Ok(Err(e))) if e.kind() == std::io::ErrorKind::NotFound => {
+            err(StatusCode::NOT_FOUND, "no such dashboard")
+        }
+        Ok(Ok(Err(e))) | Ok(Err(e)) => err(StatusCode::INTERNAL_SERVER_ERROR, e),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
 fn js(src: &'static str) -> Response {
     (
         [
@@ -1017,6 +1167,11 @@ pub fn router(root: PathBuf) -> Router {
         .route("/api/plot", post(plot))
         .route("/api/stats", post(stats))
         .route("/api/hist", post(hist))
+        .route("/api/dashboards", get(dash_list))
+        .route(
+            "/api/dashboards/{name}",
+            get(dash_get).put(dash_put).delete(dash_del),
+        )
         .route("/api/events", get(events))
         .with_state(app)
 }

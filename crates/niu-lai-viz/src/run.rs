@@ -7,6 +7,34 @@ use std::path::{Path, PathBuf};
 pub const META_FILE: &str = "run.json";
 pub const SEGMENTS_DIR: &str = "segments";
 pub const FINAL_FILE: &str = "final.parquet";
+/// flock'd by the scraper writing the run; the OS drops it if that process dies.
+pub const LOCK_FILE: &str = ".lock";
+
+/// Exclusive flock on `<run>/.lock`, held while the returned file lives.
+/// `Ok(None)`: another process holds it.
+pub fn lock_run(run_dir: &Path) -> std::io::Result<Option<std::fs::File>> {
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(run_dir.join(LOCK_FILE))?;
+    match f.try_lock() {
+        Ok(()) => Ok(Some(f)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(e)) => Err(e),
+    }
+}
+
+/// Whether a process holds the run's lock; `None` if unknown (no lock file,
+/// or a filesystem without flock).
+pub fn is_locked(run_dir: &Path) -> Option<bool> {
+    let f = std::fs::File::open(run_dir.join(LOCK_FILE)).ok()?;
+    match f.try_lock_shared() {
+        Ok(()) => Some(false),
+        Err(std::fs::TryLockError::WouldBlock) => Some(true),
+        Err(_) => None,
+    }
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Target {
@@ -90,4 +118,25 @@ pub fn data_files(run_dir: &Path) -> Vec<PathBuf> {
     incomplete.sort();
     out.sort();
     incomplete.into_iter().chain(out).map(|(_, p)| p).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_lock_is_exclusive_and_released_on_drop() {
+        let dir = std::env::temp_dir().join(format!("niu-lock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let held = lock_run(&dir).unwrap().expect("first lock");
+        assert!(
+            lock_run(&dir).unwrap().is_none(),
+            "second writer is refused"
+        );
+        assert_eq!(is_locked(&dir), Some(true));
+        drop(held);
+        assert_eq!(is_locked(&dir), Some(false));
+        assert!(lock_run(&dir).unwrap().is_some());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

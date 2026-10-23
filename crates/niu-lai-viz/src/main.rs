@@ -2,7 +2,7 @@
 use clap::{Parser, Subcommand};
 use log::{error, info, warn};
 use niu_lai_viz::config::{Config, TargetConfig};
-use niu_lai_viz::run::{now_ms, RunMeta, Target, FINAL_FILE, SEGMENTS_DIR};
+use niu_lai_viz::run::{lock_run, now_ms, RunMeta, Target, FINAL_FILE, SEGMENTS_DIR};
 use niu_lai_viz::scrape_endpoint;
 use niu_lai_writer::{compact_and_upload, periodic_compact_and_sync, DatasetWriter};
 use object_store::ObjectStore;
@@ -14,7 +14,10 @@ use std::time::Duration;
 #[command(
     name = "niu-lai-viz",
     version,
-    about = "Pounds & Prejudice: a poor man's W&B over /metrics"
+    about = "Pounds & Prejudice: a poor man's W&B over /metrics",
+    after_help = "Typical use: one `scrape` per experiment, one `serve` for all of them:\n  \
+                  niu-lai-viz scrape --root runs --run my-exp --target trainer=http://localhost:8000/metrics --label lr=3e-4\n  \
+                  niu-lai-viz serve --root runs   # then open http://127.0.0.1:8737"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -24,6 +27,12 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     /// Scrape /metrics endpoints into a new run until Ctrl+C / SIGTERM.
+    #[command(after_help = "Examples:\n  \
+        niu-lai-viz scrape --run my-exp --target trainer=http://localhost:8000/metrics\n  \
+        niu-lai-viz scrape --run my-exp --target trainer=http://node1:8000/metrics --target gpus=http://node1:9400/metrics --label lr=3e-4 --label model=8b\n  \
+        niu-lai-viz scrape --config examples/dcgm.toml --run my-exp   # filters/renames per target\n\n\
+        The run lives in <root>/<run>/ (a -2, -3... suffix if taken) and is locked (flock on <run>/.lock) while scraping.\n\
+        Ctrl+C or SIGTERM ends the run and compacts it into final.parquet.")]
     Scrape {
         /// TOML config (see examples/).
         #[arg(long)]
@@ -158,13 +167,31 @@ async fn scrape(
     let base = run
         .or(cfg.run.name.clone())
         .unwrap_or_else(|| chrono::Local::now().format("%Y%m%d-%H%M%S").to_string());
+    // create_dir is atomic: two scrapers asking for the same name get distinct runs.
+    std::fs::create_dir_all(&root)?;
     let mut name = base.clone();
     let mut n = 2;
-    while root.join(&name).exists() {
-        name = format!("{base}-{n}");
-        n += 1;
+    let run_dir = loop {
+        let dir = root.join(&name);
+        match std::fs::create_dir(&dir) {
+            Ok(()) => break dir,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                name = format!("{base}-{n}");
+                n += 1;
+            }
+            Err(e) => return Err(e.into()),
+        }
+    };
+    let mut lock = None;
+    for _ in 0..20 {
+        // `serve` probes the lock for a moment to show LIVE; retry past that.
+        lock = lock_run(&run_dir)?;
+        if lock.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    let run_dir = root.join(&name);
+    let _lock = lock.ok_or("run directory is locked by another process")?;
     let seg_dir = run_dir.join(SEGMENTS_DIR);
     std::fs::create_dir_all(&seg_dir)?;
     if let Some(p) = &config {
@@ -313,6 +340,8 @@ async fn main() -> AnyResult<()> {
             .await
         }
         Cmd::Compact { run_dir } => {
+            let _lock = lock_run(&run_dir)?
+                .ok_or("a scraper is still writing this run (its .lock is held); stop it first")?;
             finish(&run_dir, None).await?;
             if let Some(mut meta) = RunMeta::read(&run_dir) {
                 if meta.status == "running" {
