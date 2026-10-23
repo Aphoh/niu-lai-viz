@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>NIU-LAI-VIZ</title>
+<style>
+:root {
+  --grass: #5c9a2c; --grass-d: #2f5a14; --moss: #9ccc3c; --fur: #e8b923; --fur-d: #a87a10;
+  --fur-l: #fff08a; --snout: #f49ab8; --snout-d: #c0507a; --bark: #6b4423; --bark-d: #3b2310;
+  --sky: #8fd0e8; --ink: #24140a; --paper: #f6e7a6;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { font: bold 13px/1.25 "Courier New", Courier, monospace; color: var(--ink); background: var(--grass-d);
+  overflow: hidden; display: flex; flex-direction: column; }
+canvas { image-rendering: pixelated; }
+#bg { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: -1; }
+.bevel { background: var(--fur); border: 4px solid; border-color: var(--fur-l) var(--bark-d) var(--bark-d) var(--fur-l);
+  box-shadow: 5px 5px 0 rgba(36, 20, 10, .75); }
+.pit { background: var(--paper); border: 3px solid; border-color: var(--bark-d) var(--fur-l) var(--fur-l) var(--bark-d); }
+button, input, select { font: inherit; color: var(--ink); background: var(--snout); padding: 2px 8px; cursor: pointer;
+  border: 3px solid; border-color: #ffd3e2 var(--snout-d) var(--snout-d) #ffd3e2; border-radius: 0; }
+button:active { border-color: var(--snout-d) #ffd3e2 #ffd3e2 var(--snout-d); }
+input[type=text], input[type=number] { background: var(--paper); cursor: text; border-color: var(--bark-d) var(--fur-l) var(--fur-l) var(--bark-d); }
+header { display: flex; align-items: center; gap: 14px; padding: 6px 12px; margin: 8px; flex-wrap: wrap; }
+#logo { width: 84px; height: 84px; }
+.brand { display: flex; flex-direction: column; gap: 14px; padding-right: 14px; }
+h1 { margin: 0; font: 900 40px/1 Impact, "Arial Black", sans-serif; letter-spacing: 2px; color: var(--snout);
+  transform: skewX(-12deg) rotate(-2deg); transform-origin: left bottom;
+  text-shadow: 3px 3px 0 var(--bark-d), 6px 6px 0 var(--grass), 9px 9px 0 #ff00ff; }
+.tag { font-size: 12px; color: var(--bark-d); background: var(--fur-l); padding: 1px 6px; align-self: flex-start;
+  border: 2px dashed var(--bark); transform: rotate(.7deg); }
+.ctl { display: grid; grid-template-columns: auto auto auto auto; gap: 4px 6px; align-items: center; padding: 6px; }
+.ctl label { color: var(--fur-l); background: var(--bark); padding: 1px 6px; text-shadow: 1px 1px 0 #000; }
+.ctl input[type=text] { width: 200px; } .ctl input[type=number] { width: 80px; }
+#live { margin-left: auto; padding: 4px 10px; background: var(--grass-d); color: var(--moss); font-size: 18px; }
+#live.on { color: #ff2a00; background: #000; animation: blink 1s steps(2) infinite; }
+@keyframes blink { 50% { color: var(--fur); } }
+main { flex: 1; display: flex; gap: 10px; padding: 0 8px 8px; min-height: 0; }
+aside { width: 330px; flex: none; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+aside > section { padding: 8px; display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+#runs-sec { flex: 1.1; } #metrics-sec { flex: 1; }
+h2 { margin: 0; font-size: 14px; text-transform: uppercase; color: var(--fur-l); background: var(--bark); padding: 2px 6px;
+  text-shadow: 2px 2px 0 #000; display: flex; justify-content: space-between; }
+h2 small { color: var(--moss); }
+.vlist { overflow-y: auto; flex: 1; min-height: 60px; position: relative; contain: strict; }
+.vlist > .spacer { position: absolute; left: 0; top: 0; width: 1px; }
+.vrow { position: absolute; left: 0; right: 0; height: 32px; padding: 2px 4px; overflow: hidden; white-space: nowrap;
+  border-bottom: 2px dotted var(--fur-d); cursor: pointer; contain: strict; }
+.vrow:hover { background: var(--moss); }
+.vrow.on { background: var(--snout); }
+.run .top { display: flex; gap: 6px; align-items: center; }
+.run .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.swatch { width: 12px; height: 12px; border: 2px solid var(--ink); flex: none; }
+.status { font-size: 10px; padding: 0 4px; border: 2px solid var(--ink); }
+.status.running { background: #ff2a00; color: #fff; } .status.finished { background: var(--grass); color: var(--fur-l); }
+.status.stale, .status.failed { background: #777; color: #ddd; text-decoration: line-through; }
+.labels { font-size: 11px; color: var(--bark); overflow: hidden; text-overflow: ellipsis; }
+.key { height: 22px; font-size: 12px; text-overflow: ellipsis; }
+.row { display: flex; gap: 6px; align-items: center; } .row > * { flex: 1; }
+#panels { flex: 1; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(440px, 1fr)); gap: 12px;
+  align-content: start; padding: 2px 8px 8px 2px; }
+.panel { padding: 6px; min-width: 0; height: 300px; display: flex; flex-direction: column; contain: layout paint; }
+.ptitle { display: flex; gap: 6px; align-items: center; background: var(--grass); color: var(--fur-l); padding: 2px 4px;
+  text-shadow: 2px 2px 0 var(--ink); }
+.ptitle span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ptitle em { font-style: normal; font-size: 11px; color: var(--fur-l); opacity: .85; }
+.ptitle button { padding: 0 6px; }
+.plot { position: relative; flex: 1; margin-top: 6px; border: 3px solid var(--bark-d); background: var(--sky); min-height: 0; cursor: crosshair; }
+.plot canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.tip { position: absolute; pointer-events: none; z-index: 5; background: var(--paper); border: 3px solid var(--bark-d);
+  box-shadow: 3px 3px 0 var(--ink); font-size: 11px; padding: 3px 5px; white-space: nowrap; display: none; }
+.tip i { display: inline-block; width: 9px; height: 9px; border: 1px solid #000; margin-right: 4px; }
+#empty { grid-column: 1 / -1; padding: 40px; text-align: center; font-size: 22px; color: var(--fur-l); text-shadow: 3px 3px 0 var(--ink); }
+#empty canvas { width: 192px; height: 192px; display: block; margin: 0 auto 12px; }
+.muted { color: var(--bark); font-size: 11px; }
+#perf { position: fixed; right: 8px; bottom: 4px; font-size: 10px; color: var(--fur-l); text-shadow: 1px 1px 0 #000; pointer-events: none; }
+::-webkit-scrollbar { width: 14px; } ::-webkit-scrollbar-thumb { background: var(--snout); border: 3px solid var(--snout-d); }
+::-webkit-scrollbar-track { background: var(--fur-d); }
+</style>
+</head>
+<body>
+<canvas id="bg" width="96" height="54"></canvas>
+<header class="bevel">
+  <canvas id="logo" width="28" height="28"></canvas>
+  <div class="brand">
+    <h1>NIU-LAI-VIZ</h1>
+    <div class="tag">grafana for experiments &middot; weights &amp; biases for the poor &middot; 100% /metrics</div>
+  </div>
+  <div class="ctl pit">
+    <label>T=0</label>
+    <select id="amode"><option value="start">run start</option><option value="first">first sample of</option><option value="above">first value &gt;</option></select>
+    <input id="akey" type="text" placeholder="regex: train_loss$">
+    <input id="aval" type="number" value="0" step="any" title="threshold">
+    <label>X</label>
+    <select id="xmode"><option value="time">time</option><option value="metric">metric</option></select>
+    <input id="xkey" type="text" placeholder="trainer/train_step">
+    <button id="unzoom" title="or double-click a chart">unzoom</button>
+  </div>
+  <div id="live" class="pit">OFFLINE</div>
+</header>
+<main>
+  <aside>
+    <section id="runs-sec" class="bevel">
+      <h2>Runs <small id="runcount"></small></h2>
+      <input id="runfilter" type="text" placeholder="filter: lr=3e-4 optimizer=lion">
+      <div class="row"><button id="selall">pick shown</button><button id="selnone">pick none</button></div>
+      <div id="runs" class="vlist pit"><div class="spacer"></div></div>
+    </section>
+    <section id="metrics-sec" class="bevel">
+      <h2>Metrics <small id="keycount"></small></h2>
+      <input id="keyfilter" type="text" placeholder="regex: loss|util">
+      <div class="row"><button id="addall">plot matches</button><button id="clear">clear plots</button></div>
+      <div class="row muted"><label>smooth <input id="smooth" type="range" min="0" max="0.99" step="0.01" value="0"></label><span id="smoothv">0</span></div>
+      <div id="keys" class="vlist pit"><div class="spacer"></div></div>
+    </section>
+  </aside>
+  <div id="panels"><div id="empty"><canvas class="niu" width="28" height="28"></canvas>pick runs, then click a metric. moo.</div></div>
+</main>
+<div id="perf"></div>
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+const PAL = { grass: "#5c9a2c", grassD: "#2f5a14", moss: "#9ccc3c", fur: "#e8b923", furD: "#a87a10", furL: "#fff08a",
+  snout: "#f49ab8", snoutD: "#c0507a", bark: "#6b4423", barkD: "#3b2310", sky: "#8fd0e8", ink: "#24140a" };
+const PX = 2;           // CSS pixels per canvas pixel: the crunch
+const MAX_PANELS = 400;
+
+// ---------- low-poly pixel garbage ----------
+function rng(seed) { return () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296); }
+function drawBackground() {
+  const c = $("#bg"), g = c.getContext("2d"), r = rng(7), W = c.width, H = c.height, step = 12, pts = [];
+  for (let y = 0; y <= H + step; y += step) { const row = []; for (let x = 0; x <= W + step; x += step) row.push([x + (r() - .5) * step * .9, y + (r() - .5) * step * .9]); pts.push(row); }
+  const shades = (y) => y < 1 ? ["#8fd0e8", "#a7dcef", "#7cc0dd"] : y < 2 ? ["#3b2310", "#6b4423", "#4f3218", "#2f5a14"]
+    : ["#5c9a2c", "#4a8a22", "#6fae34", "#2f5a14", "#9ccc3c", "#3d7a1a", "#b5c020"];
+  for (let y = 0; y < pts.length - 1; y++) for (let x = 0; x < pts[y].length - 1; x++) {
+    const a = pts[y][x], b = pts[y][x + 1], d = pts[y + 1][x], e = pts[y + 1][x + 1], sh = shades(y);
+    for (const t of [[a, b, e], [a, e, d]]) { g.fillStyle = sh[Math.floor(r() * sh.length)]; g.beginPath(); g.moveTo(...t[0]); g.lineTo(...t[1]); g.lineTo(...t[2]); g.fill(); }
+  }
+  const img = g.getImageData(0, 0, W, H);
+  for (let i = 0; i < img.data.length; i += 4) { const n = (r() - .5) * 38; img.data[i] += n; img.data[i + 1] += n; img.data[i + 2] += n; }
+  g.putImageData(img, 0, 0);
+  for (let i = 0; i < 40; i++) { g.fillStyle = r() < .6 ? PAL.fur : PAL.snout; g.fillRect(Math.floor(r() * W), 20 + Math.floor(r() * (H - 20)), 1, 1); }
+}
+function drawNiu(c) {
+  const g = c.getContext("2d"), P = (col, ...p) => { g.fillStyle = col; g.beginPath(); g.moveTo(p[0], p[1]); for (let i = 2; i < p.length; i += 2) g.lineTo(p[i], p[i + 1]); g.fill(); };
+  P(PAL.furD, 3, 7, 0, 2, 7, 4); P(PAL.furD, 25, 7, 28, 2, 21, 4);
+  P(PAL.fur, 4, 6, 14, 2, 24, 6, 26, 15, 22, 23, 14, 26, 6, 23, 2, 15);
+  P(PAL.furL, 14, 2, 24, 6, 18, 11); P(PAL.furL, 4, 6, 14, 2, 9, 10);
+  P(PAL.furD, 2, 15, 6, 23, 8, 16); P(PAL.furD, 26, 15, 22, 23, 20, 16);
+  P(PAL.ink, 8, 11, 11, 10, 11, 13, 8, 13); P(PAL.ink, 17, 10, 20, 11, 20, 13, 17, 13);
+  g.fillStyle = "#fff"; g.fillRect(9, 11, 1, 1); g.fillRect(18, 11, 1, 1);
+  P(PAL.snout, 7, 17, 14, 14, 21, 17, 19, 23, 14, 24, 9, 23); P(PAL.snoutD, 7, 17, 9, 23, 11, 19);
+  g.fillStyle = PAL.snoutD; g.fillRect(11, 18, 2, 2); g.fillRect(16, 18, 2, 2);
+}
+
+// ---------- state ----------
+const ls = (k, d) => { try { return JSON.parse(localStorage.getItem("niu." + k)) ?? d; } catch { return d; } };
+const S = {
+  runs: [], runByName: new Map(), shownRuns: [], picked: new Set(ls("picked", [])), firstLoad: localStorage.getItem("niu.picked") === null,
+  keys: [], shownKeys: [], panels: ls("panels", []), smooth: 0, view: null,
+  align: ls("align", { mode: "start", key: "", above: 0 }), xkey: ls("xkey", ""),
+};
+const save = () => { for (const k of ["picked", "panels", "align", "xkey"]) localStorage.setItem("niu." + k, JSON.stringify(k === "picked" ? [...S.picked] : S[k])); };
+// Garish run colors, handed out oldest-first so a run keeps its color as new runs appear.
+const RUN_COLORS = ["#ff00ff", "#0047ff", "#ff6a00", "#7a00ff", "#d40000", "#008a3e", "#e6d000", "#8b4513", "#00c9b0", "#ff3d8b", "#5a7d00", "#00a2ff"];
+const colorCache = new Map();
+function color(name) {
+  let c = colorCache.get(name);
+  if (!c) { const i = colorCache.size; c = i < RUN_COLORS.length ? RUN_COLORS[i] : `hsl(${(i * 137.508) % 360},${80 + (i % 3) * 10}%,${36 + (i % 4) * 6}%)`; colorCache.set(name, c); }
+  return c;
+}
+const api = (path, body, signal) => fetch(path, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal } : { signal });
+const debounce = (f, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => f(...a), ms); }; };
+const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// ---------- virtual lists: only visible rows exist in the DOM ----------
+class VList {
+  constructor(el, rowH, render) {
+    this.el = el; this.rowH = rowH; this.render = render; this.items = []; this.spacer = el.firstElementChild; this.pool = [];
+    el.addEventListener("scroll", () => this.schedule(), { passive: true });
+    new ResizeObserver(() => this.schedule()).observe(el);
+  }
+  set(items) { this.items = items; this.spacer.style.height = items.length * this.rowH + "px"; this.schedule(true); }
+  schedule(force) { if (force) this.force = true; if (!this.raf) this.raf = requestAnimationFrame(() => { this.raf = 0; this.draw(); }); }
+  draw() {
+    const top = this.el.scrollTop, h = this.el.clientHeight, a = Math.max(0, Math.floor(top / this.rowH) - 4), b = Math.min(this.items.length, Math.ceil((top + h) / this.rowH) + 4);
+    if (!this.force && a === this.a && b === this.b) return;
+    this.force = false; this.a = a; this.b = b;
+    while (this.pool.length < b - a) { const d = document.createElement("div"); this.el.appendChild(d); this.pool.push(d); }
+    for (let i = 0; i < this.pool.length; i++) {
+      const d = this.pool[i], j = a + i;
+      if (j < b) { d.style.display = ""; d.style.transform = `translateY(${j * this.rowH}px)`; this.render(d, this.items[j], j); }
+      else d.style.display = "none";
+    }
+  }
+}
+function matchesFilter(run, toks) {
+  return toks.every((tok) => { const eq = tok.indexOf("=");
+    if (eq < 0) return run.name.includes(tok) || run._lab.includes(tok);
+    return (run.labels[tok.slice(0, eq)] ?? "").includes(tok.slice(eq + 1)); });
+}
+const runList = new VList($("#runs"), 34, (d, run) => {
+  d.className = "vrow run" + (S.picked.has(run.name) ? " on" : "");
+  d.dataset.name = run.name;
+  const st = run.status === "running" ? "LIVE" : run.status;
+  if (d._sig !== run.name + st) {
+    d._sig = run.name + st;
+    d.innerHTML = `<div class="top"><div class="swatch" style="background:${color(run.name)}"></div><div class="nm">${esc(run.name)}</div><div class="status ${run.status}">${st}</div></div><div class="labels">${esc(run._lab)}</div>`;
+  }
+});
+const keyList = new VList($("#keys"), 22, (d, key) => { d.className = "vrow key" + (S.panelSet.has(key) ? " on" : ""); if (d.textContent !== key) { d.textContent = key; d.title = key; } d.dataset.key = key; });
+$("#runs").addEventListener("click", (e) => { const r = e.target.closest(".run"); if (r) togglePick(r.dataset.name); });
+$("#keys").addEventListener("click", (e) => { const r = e.target.closest(".key"); if (r) { const k = r.dataset.key; S.panelSet.has(k) ? removePanel(k) : addPanels([k]); } });
+
+function filterRuns() {
+  const toks = $("#runfilter").value.trim().split(/\s+/).filter(Boolean);
+  S.shownRuns = toks.length ? S.runs.filter((r) => matchesFilter(r, toks)) : S.runs;
+  runList.set(S.shownRuns);
+  $("#runcount").textContent = `${S.picked.size}/${S.runs.length}`;
+}
+function filterKeys() {
+  let re; try { re = new RegExp($("#keyfilter").value, "i"); } catch { re = null; }
+  S.shownKeys = !re ? [] : $("#keyfilter").value ? S.keys.filter((k) => re.test(k)) : S.keys;
+  keyList.set(S.shownKeys);
+  $("#keycount").textContent = `${S.shownKeys.length}/${S.keys.length}`;
+}
+
+// ---------- server sync ----------
+async function refreshRuns() {
+  const runs = await (await api("/api/runs")).json();
+  for (const r of runs) r._lab = Object.entries(r.labels).map(([k, v]) => `${k}=${v}`).join(" ");
+  [...runs].sort((a, b) => a.started_at_ms - b.started_at_ms || (a.name < b.name ? -1 : 1)).forEach((r) => color(r.name));
+  S.runs = runs; S.runByName = new Map(runs.map((r) => [r.name, r]));
+  if (S.firstLoad && runs.length) { runs.slice(0, 50).forEach((r) => S.picked.add(r.name)); S.firstLoad = false; save(); }
+  for (const n of [...S.picked]) if (!S.runByName.has(n)) S.picked.delete(n);
+  filterRuns();
+  const live = runs.filter((r) => r.live).length;
+  $("#live").textContent = live ? `\u25CF ${live} LIVE` : "NO LIVE RUNS";
+  $("#live").classList.toggle("on", live > 0);
+}
+let keysCtl;
+async function refreshKeys() {
+  keysCtl?.abort(); keysCtl = new AbortController();
+  try { const res = await (await api("/api/keys", { runs: [...S.picked] }, keysCtl.signal)).json(); S.keys = res.keys; filterKeys(); } catch (e) { if (e.name !== "AbortError") throw e; }
+}
+const refreshKeysSoon = debounce(refreshKeys, 250);
+
+// ---------- charts: own canvas renderer, half-res, server-decimated ----------
+const fmtT = (s) => { const neg = s < 0; s = Math.abs(Math.round(s)); const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, x = s % 60;
+  return (neg ? "-" : "") + (h ? h + ":" + String(m).padStart(2, "0") : m) + ":" + String(x).padStart(2, "0"); };
+function fmtV(v) { const a = Math.abs(v); if (v === 0) return "0"; if (a >= 1e15 || a < 1e-3) return v.toExponential(1);
+  for (const [d, s] of [[1e12, "T"], [1e9, "G"], [1e6, "M"], [1e4, "k"]]) if (a >= d) return +(v / d).toFixed(2) + s; return String(+v.toPrecision(4)); }
+function ticks(a, b, n, time) {
+  const span = b - a; if (!(span > 0)) return [a];
+  let step;
+  if (time) { const c = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400, 28800, 86400]; step = c.find((s) => span / s <= n) ?? 86400 * Math.ceil(span / n / 86400); }
+  else { const raw = span / n, p = 10 ** Math.floor(Math.log10(raw)), f = raw / p; step = (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p; }
+  const out = []; for (let v = Math.ceil(a / step) * step; v <= b + step * 1e-9; v += step) out.push(Math.abs(v) < step * 1e-9 ? 0 : v); return out;
+}
+const M = { l: 30, r: 4, t: 4, b: 11 }; // margins in canvas px
+const charts = new Map();
+class Chart {
+  constructor(key, panel) {
+    this.key = key; this.panel = panel; this.plot = panel.querySelector(".plot"); this.tip = panel.querySelector(".tip"); this.info = panel.querySelector("em");
+    this.base = document.createElement("canvas"); this.over = document.createElement("canvas");
+    this.plot.append(this.base, this.over);
+    this.g = this.base.getContext("2d", { alpha: false }); this.o = this.over.getContext("2d");
+    this.data = null; this.dirty = true; this.visible = false; this.loading = false; this.last = 0; this.mouse = null; this.drag = null;
+    this.over.addEventListener("mousemove", (e) => { this.mouse = this.pos(e); if (this.drag) this.drag.x1 = this.mouse.x; this.hover(); });
+    this.over.addEventListener("mouseleave", () => { this.mouse = null; this.hover(); });
+    this.over.addEventListener("mousedown", (e) => { const p = this.pos(e); this.drag = { x0: p.x, x1: p.x }; });
+    window.addEventListener("mouseup", () => { if (!this.drag) return; const d = this.drag; this.drag = null;
+      if (Math.abs(d.x1 - d.x0) > 3 && this.data) { const a = this.xv(Math.min(d.x0, d.x1)), b = this.xv(Math.max(d.x0, d.x1)); setView({ x0: a, x1: b }); } else this.hover(); });
+    this.over.addEventListener("dblclick", () => setView(null));
+  }
+  pos(e) { const r = this.over.getBoundingClientRect(); return { x: (e.clientX - r.left) / PX, y: (e.clientY - r.top) / PX }; }
+  resize() {
+    const w = Math.max(40, Math.floor(this.plot.clientWidth / PX)), h = Math.max(30, Math.floor(this.plot.clientHeight / PX));
+    if (w === this.W && h === this.H) return false;
+    this.W = this.base.width = this.over.width = w; this.H = this.base.height = this.over.height = h; return true;
+  }
+  xp(x) { const d = this.data; return M.l + (x - d.x0) / (d.x1 - d.x0) * (this.W - M.l - M.r); }
+  yp(y) { const d = this.data; return this.H - M.b - (y - d.y0) / (d.y1 - d.y0) * (this.H - M.t - M.b); }
+  xv(px) { const d = this.data; return d.x0 + (px - M.l) / (this.W - M.l - M.r) * (d.x1 - d.x0); }
+  async load() {
+    this.loading = true; this.dirty = false; this.last = performance.now(); this.resize();
+    this.ctl?.abort(); this.ctl = new AbortController();
+    const body = { runs: [...S.picked], key: this.key, width: this.W - M.l - M.r, smooth: S.smooth };
+    if (S.view) { body.x0 = S.view.x0; body.x1 = S.view.x1; }
+    if (S.align.mode !== "start" && S.align.key) body.align = { key: S.align.key, above: S.align.mode === "above" ? +S.align.above : null };
+    if (S.xkey) body.x_key = S.xkey;
+    try {
+      const t0 = performance.now(), buf = await (await api("/api/plot", body, this.ctl.signal)).arrayBuffer(), t1 = performance.now();
+      const jl = new DataView(buf).getUint32(0, true), meta = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, jl)));
+      let off = 4 + jl; const series = [];
+      for (const r of meta.runs) { if (r.n) { series.push({ name: r.name, color: color(r.name), xs: new Float32Array(buf, off, r.n), ys: new Float32Array(buf, off + r.n * 4, r.n) }); } off += r.n * 8; }
+      const pad = (meta.y1 - meta.y0) * 0.06 || Math.abs(meta.y1) * 0.1 || 1;
+      this.data = { x0: meta.x0, x1: meta.x1, y0: meta.y0 - pad, y1: meta.y1 + pad, series, missing: meta.runs.length - series.length };
+      this.draw();
+      perf.note(this.key, t1 - t0, performance.now() - t1, buf.byteLength);
+    } catch (e) { if (e.name !== "AbortError") { console.error(e); this.dirty = true; } }
+    finally { this.loading = false; }
+  }
+  draw() {
+    const g = this.g, d = this.data, W = this.W, H = this.H; if (!d) return;
+    g.fillStyle = PAL.sky; g.fillRect(0, 0, W, H);
+    g.fillStyle = "#f6e7a6"; g.fillRect(0, 0, M.l, H); g.fillRect(0, H - M.b, W, M.b);
+    g.font = "8px monospace"; g.textBaseline = "middle"; g.lineWidth = 1;
+    const time = !S.xkey;
+    g.fillStyle = "rgba(59,35,16,.28)"; g.textAlign = "center";
+    for (const v of ticks(d.x0, d.x1, Math.max(2, (W - M.l) / 45), time)) { const x = Math.round(this.xp(v)); if (x < M.l || x > W - M.r) continue;
+      g.fillStyle = "rgba(59,35,16,.28)"; for (let y = M.t; y < H - M.b; y += 4) g.fillRect(x, y, 1, 2);
+      g.fillStyle = PAL.barkD; g.fillText(time ? fmtT(v) : fmtV(v), x, H - M.b / 2); }
+    g.textAlign = "right";
+    for (const v of ticks(d.y0, d.y1, Math.max(2, (H - M.b) / 22), false)) { const y = Math.round(this.yp(v)); if (y < M.t || y > H - M.b) continue;
+      g.fillStyle = "rgba(59,35,16,.28)"; for (let x = M.l; x < W - M.r; x += 4) g.fillRect(x, y, 2, 1);
+      g.fillStyle = PAL.barkD; g.fillText(fmtV(v), M.l - 2, y); }
+    g.save(); g.beginPath(); g.rect(M.l, M.t, W - M.l - M.r, H - M.t - M.b); g.clip();
+    const ax = (W - M.l - M.r) / (d.x1 - d.x0), bx = M.l - d.x0 * ax, ay = -(H - M.t - M.b) / (d.y1 - d.y0), by = H - M.b - d.y0 * ay;
+    for (const s of d.series) {
+      const xs = s.xs, ys = s.ys, n = xs.length; if (!n) continue;
+      g.strokeStyle = s.color; g.beginPath();
+      let px = Math.round(xs[0] * ax + bx), py = Math.round(ys[0] * ay + by); g.moveTo(px, py);
+      for (let i = 1; i < n; i++) { const x = Math.round(xs[i] * ax + bx), y = Math.round(ys[i] * ay + by);
+        if (x !== px) { g.lineTo(x, py); px = x; } if (y !== py) { g.lineTo(x, y); py = y; } }
+      g.stroke();
+    }
+    g.restore();
+    const lack = d.missing ? ` \u00b7 ${d.missing} w/o data` : "";
+    this.info.textContent = `${d.series.length} runs${lack}`;
+    this.hover();
+  }
+  // Overlay only: crosshair, highlighted nearest run, tooltip. Never touches the data layer.
+  hover() {
+    if (this.hoverRaf) return;
+    this.hoverRaf = requestAnimationFrame(() => {
+      this.hoverRaf = 0; const o = this.o, d = this.data; o.clearRect(0, 0, this.W, this.H);
+      if (this.drag) { o.fillStyle = "rgba(244,154,184,.45)"; o.fillRect(Math.min(this.drag.x0, this.drag.x1), M.t, Math.abs(this.drag.x1 - this.drag.x0), this.H - M.t - M.b); }
+      if (!d || !this.mouse || this.mouse.x < M.l) { this.tip.style.display = "none"; return; }
+      const xv = this.xv(this.mouse.x), my = this.mouse.y, near = [];
+      for (const s of d.series) { const xs = s.xs; let lo = 0, hi = xs.length; while (lo < hi) { const m = (lo + hi) >> 1; if (xs[m] <= xv) lo = m + 1; else hi = m; }
+        if (lo === 0) continue; const v = s.ys[lo - 1]; near.push({ s, v, dist: Math.abs(this.yp(v) - my) }); }
+      near.sort((a, b) => a.dist - b.dist);
+      o.fillStyle = PAL.barkD; o.fillRect(Math.round(this.mouse.x), M.t, 1, this.H - M.t - M.b);
+      const top = near[0];
+      if (top) { const s = top.s; o.save(); o.beginPath(); o.rect(M.l, M.t, this.W - M.l - M.r, this.H - M.t - M.b); o.clip();
+        o.lineWidth = 3; o.strokeStyle = "#000"; this.path(o, s); o.stroke(); o.lineWidth = 1; o.strokeStyle = s.color; this.path(o, s); o.stroke(); o.restore();
+        o.fillStyle = "#000"; o.fillRect(Math.round(this.mouse.x) - 2, Math.round(this.yp(top.v)) - 2, 5, 5); o.fillStyle = s.color; o.fillRect(Math.round(this.mouse.x) - 1, Math.round(this.yp(top.v)) - 1, 3, 3); }
+      const rows = near.slice(0, 8).map((n) => `<div><i style="background:${n.s.color}"></i>${esc(n.s.name)}: ${fmtV(n.v)}</div>`).join("");
+      this.tip.innerHTML = `<div>${S.xkey ? fmtV(xv) : "t=" + fmtT(xv)}${near.length > 8 ? ` \u00b7 +${near.length - 8} more` : ""}</div>${rows}`;
+      this.tip.style.display = "block";
+      const left = this.mouse.x * PX + 14, pw = this.plot.clientWidth;
+      this.tip.style.left = (left + 260 > pw ? Math.max(0, this.mouse.x * PX - 14 - this.tip.offsetWidth) : left) + "px"; this.tip.style.top = "4px";
+    });
+  }
+  path(o, s) { const xs = s.xs, ys = s.ys; o.beginPath(); let py = this.yp(ys[0]); o.moveTo(this.xp(xs[0]), py);
+    for (let i = 1; i < xs.length; i++) { const x = this.xp(xs[i]), y = this.yp(ys[i]); o.lineTo(x, py); o.lineTo(x, y); py = y; } }
+  destroy() { this.ctl?.abort(); }
+}
+
+// One scheduler for every chart: visible + dirty charts load, a few at a time, throttled per chart.
+const SCHED = { running: 0, max: 6, minGap: 900, timer: 0 };
+function pump() {
+  const now = performance.now(); let wait = Infinity;
+  for (const c of charts.values()) {
+    if (SCHED.running >= SCHED.max) break;
+    if (!c.dirty || !c.visible || c.loading) continue;
+    const gap = SCHED.minGap - (now - c.last);
+    if (gap > 0 && c.data) { wait = Math.min(wait, gap); continue; }
+    SCHED.running++; c.load().finally(() => { SCHED.running--; pump(); });
+  }
+  if (wait < Infinity && !SCHED.timer) SCHED.timer = setTimeout(() => { SCHED.timer = 0; pump(); }, wait);
+}
+function invalidate(force) { for (const c of charts.values()) { c.dirty = true; if (force) c.last = 0; } pump(); }
+function setView(v) { S.view = v; invalidate(true); }
+const vis = new IntersectionObserver((ents) => { for (const e of ents) { const c = e.target._chart; c.visible = e.isIntersecting; } pump(); }, { root: $("#panels"), rootMargin: "300px" });
+const ro = new ResizeObserver((ents) => { for (const e of ents) { const c = e.target.closest(".panel")._chart; if (c.resize()) { c.dirty = true; c.last = 0; c.draw(); } } pump(); });
+
+S.panelSet = new Set(S.panels);
+function addPanels(keys) {
+  keys = keys.filter((k) => !S.panelSet.has(k)).slice(0, MAX_PANELS - S.panels.length);
+  const frag = document.createDocumentFragment();
+  for (const key of keys) {
+    S.panels.push(key); S.panelSet.add(key);
+    const p = document.createElement("div"); p.className = "panel bevel";
+    p.innerHTML = `<div class="ptitle"><span></span><em></em><button>x</button></div><div class="plot"><div class="tip"></div></div>`;
+    p.querySelector("span").textContent = key; p.querySelector("span").title = key;
+    p.querySelector("button").onclick = () => removePanel(key);
+    frag.appendChild(p);
+    const c = new Chart(key, p); p._chart = c; charts.set(key, c);
+  }
+  $("#panels").appendChild(frag);
+  for (const k of keys) { const p = charts.get(k).panel; vis.observe(p); ro.observe(p.querySelector(".plot")); }
+  $("#empty").style.display = S.panels.length ? "none" : ""; save(); keyList.schedule(true); pump();
+}
+function removePanel(key) {
+  const c = charts.get(key); if (!c) return; c.destroy(); vis.unobserve(c.panel); c.panel.remove(); charts.delete(key);
+  S.panels = S.panels.filter((k) => k !== key); S.panelSet.delete(key); $("#empty").style.display = S.panels.length ? "none" : ""; save(); keyList.schedule(true);
+}
+const picksChanged = debounce(() => { invalidate(true); refreshKeys(); }, 150);
+function togglePick(name) { S.picked.has(name) ? S.picked.delete(name) : S.picked.add(name); save(); runList.schedule(true); $("#runcount").textContent = `${S.picked.size}/${S.runs.length}`; picksChanged(); }
+
+// ---------- live ----------
+const changed = new Set();
+const onLive = debounce(async () => {
+  const runs = [...changed]; changed.clear();
+  await refreshRuns();
+  if (runs.some((r) => S.picked.has(r))) { invalidate(false); refreshKeysSoon(); }
+}, 400);
+function connect() {
+  const es = new EventSource("/api/events");
+  es.addEventListener("run", (e) => { changed.add(e.data); onLive(); });
+  es.onerror = () => { $("#live").textContent = "SERVER GONE"; $("#live").classList.remove("on"); };
+  es.onopen = () => onLive();
+}
+
+// ---------- perf HUD ----------
+const perf = { n: 0, net: 0, draw: 0, bytes: 0, note(k, net, draw, b) { this.n++; this.net += net; this.draw += draw; this.bytes += b; this.show(); },
+  show: debounce(() => { const p = perf; $("#perf").textContent = `${p.n} loads \u00b7 avg net ${(p.net / p.n).toFixed(0)}ms \u00b7 avg draw ${(p.draw / p.n).toFixed(1)}ms \u00b7 ${(p.bytes / p.n / 1024).toFixed(0)}KB/chart`; }, 200) };
+
+// ---------- wiring ----------
+$("#runfilter").oninput = debounce(filterRuns, 60);
+$("#keyfilter").oninput = debounce(filterKeys, 60);
+$("#selall").onclick = () => { S.picked = new Set(S.shownRuns.map((r) => r.name)); save(); filterRuns(); picksChanged(); };
+$("#selnone").onclick = () => { S.picked.clear(); save(); filterRuns(); picksChanged(); };
+$("#addall").onclick = () => addPanels(S.shownKeys);
+$("#clear").onclick = () => { for (const k of [...S.panels]) removePanel(k); };
+$("#smooth").oninput = (e) => { S.smooth = +e.target.value; $("#smoothv").textContent = S.smooth.toFixed(2); smoothSoon(); };
+const smoothSoon = debounce(() => invalidate(true), 120);
+$("#unzoom").onclick = () => setView(null);
+const alignChanged = debounce(() => { S.align = { mode: $("#amode").value, key: $("#akey").value, above: +$("#aval").value };
+  S.xkey = $("#xmode").value === "metric" ? $("#xkey").value : ""; save(); setView(null); }, 300);
+for (const id of ["amode", "akey", "aval", "xmode", "xkey"]) $("#" + id).addEventListener("input", alignChanged);
+$("#amode").value = S.align.mode; $("#akey").value = S.align.key; $("#aval").value = S.align.above;
+$("#xmode").value = S.xkey ? "metric" : "time"; $("#xkey").value = S.xkey;
+
+drawBackground(); drawNiu($("#logo")); document.querySelectorAll(".niu").forEach(drawNiu);
+(async () => {
+  await refreshRuns();
+  await refreshKeys();
+  const initial = S.panels.length ? S.panels : S.keys.filter((k) => /loss|grad_norm|learning_rate|utilization.*gpu=0|eval_acc/.test(k)).slice(0, 6);
+  S.panels = []; S.panelSet = new Set(); addPanels(initial);
+  connect();
+})();
+</script>
+</body>
+</html>

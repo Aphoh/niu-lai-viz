@@ -1,0 +1,21 @@
+# NVIDIA DCGM exporter: what tachometer's hard-coded `dcgm` filter did, as config.
+save_interval_secs = 2
+
+[run]
+labels = { model = "llama-70b", tp = "8" }
+
+[[targets]]
+name = "dcgm"
+url = "http://localhost:9400/metrics"
+interval_ms = 1000
+include = ["^DCGM_FI_DEV_(GPU_UTIL|MEM_COPY_UTIL|FB_USED|FB_FREE|POWER_USAGE|GPU_TEMP|SM_CLOCK|NVLINK_BANDWIDTH_TOTAL|XID_ERRORS)$"]
+strip_prefix = ["DCGM_FI_DEV_"]
+rename = [{ pattern = "^(.*)$", replace = "gpu_$1" }]
+drop_labels = ["UUID", "pci_bus_id", "device", "modelName", "Hostname", "DCGM_FI_DRIVER_VERSION"]
+label_columns = ["gpu"]
+
+# Optional: tag each GPU with what it runs.
+[targets.lookup.gpu."0"]
+role = "prefill"
+[targets.lookup.gpu."1"]
+role = "decode"

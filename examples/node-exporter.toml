@@ -1,0 +1,11 @@
+# Prometheus node_exporter: keep a few host series, drop per-CPU noise.
+save_interval_secs = 2
+
+[[targets]]
+name = "node"
+url = "http://localhost:9100/metrics"
+interval_ms = 2000
+include = ["^node_(load1|memory_MemAvailable_bytes|memory_MemTotal_bytes|network_(receive|transmit)_bytes_total|infiniband_port_data_(received|transmitted)_bytes_total)$"]
+exclude = ["^go_", "^promhttp_", "^process_"]
+strip_prefix = ["node_"]
+label_columns = ["device"]

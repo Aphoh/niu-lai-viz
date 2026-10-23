@@ -1,0 +1,16 @@
+# Rules shared by every target. Targets themselves come from --target on the CLI.
+save_interval_secs = 2
+
+[defaults]
+exclude = ["^process_"]
+strip_prefix = ["accel_"]
+label_columns = ["gpu"]
+
+[defaults.lookup.gpu."0"]
+role = "prefill"
+[defaults.lookup.gpu."1"]
+role = "prefill"
+[defaults.lookup.gpu."2"]
+role = "decode"
+[defaults.lookup.gpu."3"]
+role = "decode"

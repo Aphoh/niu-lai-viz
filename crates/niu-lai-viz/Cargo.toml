@@ -1,0 +1,39 @@
+[package]
+name = "niu-lai-viz"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Scrape Prometheus /metrics into Parquet runs and watch them live. Grafana for experiments."
+
+[lib]
+name = "niu_lai_viz"
+path = "src/lib.rs"
+
+[[bin]]
+name = "niu-lai-viz"
+path = "src/main.rs"
+
+[dependencies]
+niu-lai-writer = { path = "../niu-lai-writer" }
+tokio.workspace = true
+reqwest.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+object_store.workspace = true
+log.workspace = true
+env_logger.workspace = true
+serde = { workspace = true }
+toml = "0.8"
+futures.workspace = true
+regex = "1"
+arrow = { workspace = true }
+parquet = { workspace = true }
+axum = "0.8"
+gethostname = "0.5"
+rayon = "1.10"
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.8"
