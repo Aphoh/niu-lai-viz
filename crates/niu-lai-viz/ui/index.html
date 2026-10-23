@@ -27,6 +27,12 @@ body.hdr-hidden header { margin-top: calc(-1 * var(--hdr-h, 120px)); }
 body.noside aside { display: none; }
 #sidetog { font-size: 16px; padding: 0 6px; align-self: stretch; }
 .panel.wide { grid-column: 1 / -1; height: 440px; }
+.ptitle { cursor: grab; } .panel.dragging { opacity: .4; }
+.panel.drop-before { box-shadow: -8px 0 0 #ff00ff, 5px 5px 0 rgba(36,20,10,.75); } .panel.drop-after { box-shadow: 8px 0 0 #ff00ff, 5px 5px 0 rgba(36,20,10,.75); }
+.ptitle .sbtn { min-width: 52px; } .ptitle .ybtn.on { background: #ff00ff; color: #fff; }
+#ydlg { padding: 10px; min-width: 300px; } #ydlg::backdrop { background: rgba(47, 90, 20, .55); }
+#ydlg form { display: flex; flex-direction: column; gap: 8px; } #ydlg label { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+#ydlg h2 { word-break: break-all; } #ydlg input, #ydlg select { width: 160px; }
 #logo { width: 84px; height: 84px; }
 .brand { display: flex; flex-direction: column; gap: 14px; padding-right: 14px; }
 h1 { margin: 0; font: 900 40px/1 Impact, "Arial Black", sans-serif; letter-spacing: 2px; color: var(--snout);
@@ -126,6 +132,13 @@ h2 small { color: var(--moss); }
   <div id="panels"><div id="empty"><canvas class="niu" width="28" height="28"></canvas>pick runs, then click a metric. moo.</div></div>
 </main>
 <div id="perf"></div>
+<dialog id="ydlg" class="bevel"><form method="dialog">
+  <h2 id="ydlg-t">y axis</h2>
+  <label>scale <select id="yscale"><option value="lin">linear</option><option value="log">log</option><option value="symlog">symlog</option></select></label>
+  <label>y min <input id="ymin" type="number" step="any" placeholder="auto"></label>
+  <label>y max <input id="ymax" type="number" step="any" placeholder="auto"></label>
+  <div class="row"><button value="ok">ok</button><button value="auto">auto range</button><button value="cancel" formnovalidate>cancel</button></div>
+</form></dialog>
 <script>
 "use strict";
 const $ = (s) => document.querySelector(s);
@@ -186,9 +199,9 @@ const ls = (k, d) => { try { return JSON.parse(localStorage.getItem("niu." + k))
 const S = {
   runs: [], runByName: new Map(), shownRuns: [], picked: new Set(ls("picked", [])), firstLoad: localStorage.getItem("niu.picked") === null,
   keys: [], shownKeys: [], panels: ls("panels", []), smooth: 0, view: null,
-  align: ls("align", { mode: "start", key: "", above: 0 }), xkey: ls("xkey", ""), wide: new Set(ls("wide", [])),
+  align: ls("align", { mode: "start", key: "", above: 0 }), xkey: ls("xkey", ""), wide: new Set(ls("wide", [])), yopt: ls("yopt", {}),
 };
-const save = () => { for (const k of ["picked", "panels", "align", "xkey", "wide"]) localStorage.setItem("niu." + k, JSON.stringify(k === "picked" || k === "wide" ? [...S[k]] : S[k])); };
+const save = () => { for (const k of ["picked", "panels", "align", "xkey", "wide", "yopt"]) localStorage.setItem("niu." + k, JSON.stringify(k === "picked" || k === "wide" ? [...S[k]] : S[k])); };
 // Garish run colors, handed out oldest-first so a run keeps its color as new runs appear.
 const RUN_COLORS = ["#ff00ff", "#0047ff", "#ff6a00", "#7a00ff", "#d40000", "#008a3e", "#e6d000", "#8b4513", "#00c9b0", "#ff3d8b", "#5a7d00", "#00a2ff"];
 const colorCache = new Map();
@@ -246,7 +259,7 @@ const runList = new VList($("#runs"), 34, (d, run) => {
 });
 const keyList = new VList($("#keys"), 22, (d, key) => { d.className = "vrow key" + (S.panelSet.has(key) ? " on" : ""); if (d.textContent !== key) { d.textContent = key; d.title = key; } d.dataset.key = key; });
 $("#runs").addEventListener("click", (e) => { const r = e.target.closest(".run"); if (r) togglePick(r.dataset.name); });
-$("#keys").addEventListener("click", (e) => { const r = e.target.closest(".key"); if (r) { const k = r.dataset.key; S.panelSet.has(k) ? removePanel(k) : addPanels([k]); } });
+$("#keys").addEventListener("click", (e) => { const r = e.target.closest(".key"); if (r) { const k = r.dataset.key; S.panelSet.has(k) ? removePanel(k) : addPanels([k], true); } });
 
 function filterRuns() {
   const toks = $("#runfilter").value.trim().split(/\s+/).filter(Boolean);
@@ -293,6 +306,22 @@ function ticks(a, b, n, time) {
   else { const raw = span / n, p = 10 ** Math.floor(Math.log10(raw)), f = raw / p; step = (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p; }
   const out = []; for (let v = Math.ceil(a / step) * step; v <= b + step * 1e-9; v += step) out.push(Math.abs(v) < step * 1e-9 ? 0 : v); return out;
 }
+const YFWD = { log: (v) => v > 0 ? Math.log10(v) : NaN, symlog: (v) => Math.sign(v) * Math.log10(1 + Math.abs(v)) };
+const YINV = { log: (t) => 10 ** t, symlog: (t) => Math.sign(t) * (10 ** Math.abs(t) - 1) };
+// Y ticks as {t: position in scaled space, v: value to print}.
+function yticks(d, n) {
+  if (d.scale === "lin") return ticks(d.y0, d.y1, n, false).map((v) => ({ t: v, v }));
+  const out = [], f = YFWD[d.scale];
+  if (d.scale === "log") {
+    const a = Math.floor(d.y0), b = Math.ceil(d.y1), dec = b - a, step = Math.max(1, Math.ceil(dec / n));
+    for (let k = a; k <= b; k += step) for (const m of dec * 3 <= n ? [1, 2, 5] : [1]) { const v = m * 10 ** k, t = f(v); if (t >= d.y0 && t <= d.y1) out.push({ t, v }); }
+  } else {
+    const top = Math.ceil(Math.max(Math.abs(d.y0), Math.abs(d.y1))), step = Math.max(1, Math.ceil((d.y1 - d.y0) / n));
+    for (let k = 0; k <= top; k += step) for (const sg of k ? [-1, 1] : [1]) { const v = k ? sg * 10 ** (k - 1) : 0, t = f(v); if (t >= d.y0 && t <= d.y1) out.push({ t, v }); }
+    out.sort((p, q) => p.t - q.t);
+  }
+  return out.length ? out : [{ t: d.y0, v: YINV[d.scale](d.y0) }];
+}
 const M = { l: 30, r: 4, t: 4, b: 11 }; // margins in canvas px
 const charts = new Map();
 class Chart {
@@ -336,12 +365,28 @@ class Chart {
       const jl = new DataView(buf).getUint32(0, true), meta = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, jl)));
       let off = 4 + jl; const series = [];
       for (const r of meta.runs) { if (r.n) { const c = color(r.name); series.push({ name: r.name, color: c, rgba: rgba(c), xs: new Float32Array(buf, off, r.n), ys: new Float32Array(buf, off + r.n * 4, r.n) }); } off += r.n * 8; }
-      const pad = (meta.y1 - meta.y0) * 0.06 || Math.abs(meta.y1) * 0.1 || 1;
-      this.data = { x0: meta.x0, x1: meta.x1, y0: meta.y0 - pad, y1: meta.y1 + pad, series, missing: meta.runs.length - series.length };
+      this.data = { x0: meta.x0, x1: meta.x1, series, missing: meta.runs.length - series.length }; this.prep();
       this.draw();
       perf.note(t1 - t0, buf.byteLength);
     } catch (e) { if (e.name !== "AbortError") { console.error(e); this.dirty = true; } }
     finally { this.loading = false; }
+  }
+  // Apply this metric's y scale (lin/log/symlog) and manual range; lines draw from s.ty.
+  prep() {
+    const d = this.data; if (!d) return;
+    const o = S.yopt[this.key] || {}, f = YFWD[o.scale];
+    let y0 = Infinity, y1 = -Infinity;
+    for (const s of d.series) {
+      const ys = s.ys, n = ys.length, ty = f ? new Float32Array(n) : ys;
+      for (let i = 0; i < n; i++) { const v = f ? (ty[i] = f(ys[i])) : ys[i]; if (v > -Infinity && v < Infinity) { if (v < y0) y0 = v; if (v > y1) y1 = v; } }
+      s.ty = ty;
+    }
+    if (!(y1 >= y0)) { y0 = 0; y1 = 1; }
+    const pad = (y1 - y0) * 0.06 || Math.abs(y1) * 0.1 || 1; y0 -= pad; y1 += pad;
+    const lo = o.min == null ? NaN : f ? f(o.min) : o.min, hi = o.max == null ? NaN : f ? f(o.max) : o.max;
+    if (isFinite(lo)) y0 = lo; if (isFinite(hi)) y1 = hi; if (!(y1 > y0)) y1 = y0 + 1;
+    d.y0 = y0; d.y1 = y1; d.scale = o.scale || "lin";
+    this.sbtn.textContent = d.scale; this.ybtn.classList.toggle("on", o.min != null || o.max != null);
   }
   draw() { this.list = null; queueDraw(this); }
   drawNow() {
@@ -354,8 +399,8 @@ class Chart {
     let xt = ticks(d.x0, d.x1, Math.max(2, pw / 45), time);
     const lw = xt.reduce((m, v) => Math.max(m, g.measureText(xlab(v)).width), 0);
     if (xt.length > 1 && lw + 6 > pw / xt.length) xt = ticks(d.x0, d.x1, Math.max(1, pw / (lw + 10)), time);
-    const yt = ticks(d.y0, d.y1, Math.max(2, (H - M.b) / 22), false);
-    this.rasterGrid(xt, yt, pw, ph);
+    const yt = yticks(d, Math.max(2, (H - M.b) / 22));
+    this.rasterGrid(xt, yt.map((o) => o.t), pw, ph);
     this.rasterLines(pw, ph);
     this.blit();
     this.labels(xt, yt, xlab);
@@ -374,7 +419,7 @@ class Chart {
     const d = this.data, buf = this.buf, ax = pw / (d.x1 - d.x0), bx = -d.x0 * ax + 0.5, ay = -ph / (d.y1 - d.y0), by = ph - d.y0 * ay + 0.5;
     const W1 = pw - 1, H1 = ph - 1;
     for (const s of d.series) {
-      const xs = s.xs, ys = s.ys, n = xs.length, c = s.rgba;
+      const xs = s.xs, ys = s.ty, n = xs.length, c = s.rgba;
       let px = Math.floor(xs[0] * ax + bx), py = Math.floor(ys[0] * ay + by);
       if (px >= 0 && px <= W1 && py >= 0 && py <= H1) buf[py * pw + px] = c;
       for (let i = 1; i < n; i++) {
@@ -400,7 +445,7 @@ class Chart {
     g.textBaseline = "middle"; g.fillStyle = PAL.barkD; g.textAlign = "center";
     for (const v of xt) { const x = Math.round(this.xp(v)); if (x >= M.l && x <= W - M.r) g.fillText(xlab(v), x, H - M.b / 2); }
     g.textAlign = "right";
-    for (const v of yt) { const y = Math.round(this.yp(v)); if (y >= M.t && y <= H - M.b) g.fillText(fmtV(v), M.l - 2, y); }
+    for (const o of yt) { const y = Math.round(this.yp(o.t)); if (y >= M.t && y <= H - M.b) g.fillText(fmtV(o.v), M.l - 2, y); }
     const info = `${d.series.length} runs${d.missing ? ` \u00b7 ${d.missing} w/o data` : ""}`; if (this.info.textContent !== info) this.info.textContent = info;
   }
   // Overlay only: crosshair, highlighted nearest run, tooltip. Never touches the data layer.
@@ -416,20 +461,21 @@ class Chart {
       if (!d || mx == null || mx < M.l) { if (this.tipOn) { this.tip.style.display = "none"; this.tipOn = false; } return; }
       // Top-K nearest by screen distance in one pass, no allocation per series.
       const K = 8, xv = F ? F.xv : this.xv(mx), my = this.mouse ? this.mouse.y : -1e9, ph = this.H - M.t - M.b, ay = -ph / (d.y1 - d.y0), by = this.H - M.b - d.y0 * ay;
-      const topS = new Array(K), topV = new Float64Array(K), topD = new Float64Array(K).fill(Infinity); let count = 0;
+      const topS = new Array(K), topV = new Float64Array(K), topT = new Float64Array(K), topD = new Float64Array(K).fill(Infinity); let count = 0;
       const at = (s) => { const xs = s.xs; let lo = 0, hi = xs.length; while (lo < hi) { const m = (lo + hi) >> 1; if (xs[m] <= xv) lo = m + 1; else hi = m; } return lo; };
       for (const s of d.series) {
         const lo = at(s); if (lo === 0) continue; count++;
-        const v = s.ys[lo - 1], dist = Math.abs(v * ay + by - my);
+        const tv = s.ty[lo - 1]; if (tv !== tv) continue;
+        const v = s.ys[lo - 1], dist = Math.abs(tv * ay + by - my);
         if (dist >= topD[K - 1]) continue;
-        let j = K - 1; while (j > 0 && topD[j - 1] > dist) { topD[j] = topD[j - 1]; topV[j] = topV[j - 1]; topS[j] = topS[j - 1]; j--; }
-        topD[j] = dist; topV[j] = v; topS[j] = s;
+        let j = K - 1; while (j > 0 && topD[j - 1] > dist) { topD[j] = topD[j - 1]; topV[j] = topV[j - 1]; topT[j] = topT[j - 1]; topS[j] = topS[j - 1]; j--; }
+        topD[j] = dist; topV[j] = v; topT[j] = tv; topS[j] = s;
       }
       o.fillStyle = F ? "#ff00ff" : PAL.barkD; o.fillRect(Math.round(mx), M.t, F ? 2 : 1, ph);
       const s = this.mouse ? topS[0] : null;
       if (s) { o.save(); o.beginPath(); o.rect(M.l, M.t, this.W - M.l - M.r, ph); o.clip();
         this.path(o, s); o.lineWidth = 3; o.strokeStyle = "#000"; o.stroke(); o.lineWidth = 1; o.strokeStyle = s.color; o.stroke(); o.restore();
-        const yy = Math.round(this.yp(topV[0])), xx = Math.round(mx);
+        const yy = Math.round(this.yp(topT[0])), xx = Math.round(mx);
         o.fillStyle = "#000"; o.fillRect(xx - 2, yy - 2, 5, 5); o.fillStyle = s.color; o.fillRect(xx - 1, yy - 1, 3, 3); }
       const head = `<div>${S.xkey ? fmtV(xv) : "t=" + fmtT(xv)} \u00b7 ${count} runs</div>`;
       if (F) {
@@ -459,7 +505,7 @@ class Chart {
   endDrag() { const d = this.drag; this.drag = null; if (!d) return;
     if (Math.abs(d.x1 - d.x0) > 3 && this.data) { const a = this.xv(Math.min(d.x0, d.x1)), b = this.xv(Math.max(d.x0, d.x1)); setView({ x0: a, x1: b }); }
     else if (this.frozen?.pinned) this.unfreeze(); else { this.unfreeze(); this.freeze(true); } }
-  path(o, s) { const xs = s.xs, ys = s.ys; o.beginPath(); let py = this.yp(ys[0]); o.moveTo(this.xp(xs[0]), py);
+  path(o, s) { const xs = s.xs, ys = s.ty; o.beginPath(); let py = this.yp(ys[0]); o.moveTo(this.xp(xs[0]), py);
     for (let i = 1; i < xs.length; i++) { const x = this.xp(xs[i]), y = this.yp(ys[i]); o.lineTo(x, py); o.lineTo(x, y); py = y; } }
   destroy() { this.ctl?.abort(); cancelAnimationFrame(this.hoverRaf); this.data = null; if (dragging === this) dragging = null; }
 }
@@ -526,21 +572,28 @@ $("#sidetog").onclick = () => setSide(!document.body.classList.contains("noside"
 setSide(ls("noside", false));
 
 S.panelSet = new Set(S.panels);
-function addPanels(keys) {
+function addPanels(keys, scroll) {
   keys = keys.filter((k) => !S.panelSet.has(k)).slice(0, MAX_PANELS - S.panels.length);
   const frag = document.createDocumentFragment();
   for (const key of keys) {
     S.panels.push(key); S.panelSet.add(key);
     const p = document.createElement("div"); p.className = "panel bevel";
-    p.innerHTML = `<div class="ptitle"><span></span><em></em><button class="wbtn" title="full width">⇔</button><button class="xbtn">x</button></div><div class="plot"><div class="tip"></div></div>`;
+    p.innerHTML = `<div class="ptitle"><span></span><em></em><button class="sbtn" title="y scale: lin → log → symlog">lin</button><button class="ybtn" title="set y min/max">y↕</button><button class="wbtn" title="full width">⇔</button><button class="xbtn">x</button></div><div class="plot"><div class="tip"></div></div>`;
     if (S.wide.has(key)) p.classList.add("wide");
+    const title = p.querySelector(".ptitle"); title.draggable = true; title.title = "drag to reorder";
+    title.addEventListener("dragstart", (e) => { dragKey = key; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", key); p.classList.add("dragging"); });
+    title.addEventListener("dragend", () => { p.classList.remove("dragging"); clearDrop(); dragKey = null; });
+    p.querySelector(".sbtn").onclick = () => { const o = S.yopt[key] || {}, order = ["lin", "log", "symlog"]; setYopt(key, { ...o, scale: order[(order.indexOf(o.scale || "lin") + 1) % 3] }); };
+    p.querySelector(".ybtn").onclick = () => openYDialog(key);
     p.querySelector(".wbtn").onclick = () => { const on = p.classList.toggle("wide"); on ? S.wide.add(key) : S.wide.delete(key); save(); };
     p.querySelector("span").textContent = key; p.querySelector("span").title = key;
     p.querySelector(".xbtn").onclick = () => removePanel(key);
     frag.appendChild(p);
-    const c = new Chart(key, p); p._chart = c; charts.set(key, c);
+    const c = new Chart(key, p); p._chart = c; charts.set(key, c); c.sbtn = p.querySelector(".sbtn"); c.ybtn = p.querySelector(".ybtn");
+    c.sbtn.textContent = (S.yopt[key] || {}).scale || "lin"; c.ybtn.classList.toggle("on", S.yopt[key]?.min != null || S.yopt[key]?.max != null);
   }
   $("#panels").appendChild(frag);
+  if (scroll && keys.length) charts.get(keys[0]).panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
   for (const k of keys) { const p = charts.get(k).panel; vis.observe(p); ro.observe(p.querySelector(".plot")); }
   $("#empty").style.display = S.panels.length ? "none" : ""; save(); keyList.schedule(true); pump();
 }
@@ -551,6 +604,38 @@ function removePanel(key) {
 }
 const picksChanged = debounce(() => { invalidate(true); refreshKeys(); }, 150);
 function togglePick(name) { S.picked.has(name) ? S.picked.delete(name) : S.picked.add(name); save(); runList.schedule(true); $("#runcount").textContent = `${S.picked.size}/${S.runs.length}`; picksChanged(); }
+
+// ---------- per-metric y axis ----------
+function setYopt(key, o) {
+  if (!o.scale || o.scale === "lin") delete o.scale; if (o.min == null) delete o.min; if (o.max == null) delete o.max;
+  if (Object.keys(o).length) S.yopt[key] = o; else delete S.yopt[key];
+  save(); const c = charts.get(key); if (c) { c.prep(); c.draw(); }
+}
+function openYDialog(key) {
+  const dlg = $("#ydlg"), o = S.yopt[key] || {};
+  $("#ydlg-t").textContent = key; $("#yscale").value = o.scale || "lin"; $("#ymin").value = o.min ?? ""; $("#ymax").value = o.max ?? "";
+  dlg.onclose = () => {
+    const num = (id) => $(id).value === "" ? null : +$(id).value;
+    if (dlg.returnValue === "ok") setYopt(key, { scale: $("#yscale").value, min: num("#ymin"), max: num("#ymax") });
+    else if (dlg.returnValue === "auto") setYopt(key, { scale: $("#yscale").value });
+  };
+  dlg.returnValue = ""; dlg.showModal(); $("#ymin").focus();
+}
+
+// ---------- drag to reorder ----------
+let dragKey = null;
+function clearDrop() { for (const el of document.querySelectorAll(".drop-before,.drop-after")) el.classList.remove("drop-before", "drop-after"); }
+$("#panels").addEventListener("dragover", (e) => {
+  const t = e.target.closest(".panel"); if (!dragKey || !t || t._chart.key === dragKey) return;
+  e.preventDefault(); e.dataTransfer.dropEffect = "move";
+  const r = t.getBoundingClientRect(), after = e.clientX - r.left > r.width / 2;
+  if (!t.classList.contains(after ? "drop-after" : "drop-before")) { clearDrop(); t.classList.add(after ? "drop-after" : "drop-before"); }
+});
+$("#panels").addEventListener("drop", (e) => {
+  const t = e.target.closest(".panel"), src = dragKey && charts.get(dragKey)?.panel; if (!t || !src || t === src) return;
+  e.preventDefault(); t.classList.contains("drop-after") ? t.after(src) : t.before(src); clearDrop();
+  S.panels = [...$("#panels").querySelectorAll(".panel")].map((p) => p._chart.key); save();
+});
 
 // ---------- live ----------
 const changed = new Set();
@@ -577,7 +662,7 @@ $("#runfilter").oninput = debounce(filterRuns, 60);
 $("#keyfilter").oninput = debounce(filterKeys, 60);
 $("#selall").onclick = () => { S.picked = new Set(S.shownRuns.map((r) => r.name)); save(); filterRuns(); picksChanged(); };
 $("#selnone").onclick = () => { S.picked.clear(); save(); filterRuns(); picksChanged(); };
-$("#addall").onclick = () => addPanels(S.shownKeys);
+$("#addall").onclick = () => addPanels(S.shownKeys, true);
 $("#clear").onclick = () => { for (const k of [...S.panels]) removePanel(k); };
 $("#smooth").oninput = (e) => { S.smooth = +e.target.value; $("#smoothv").textContent = S.smooth.toFixed(2); smoothSoon(); };
 const smoothSoon = debounce(() => invalidate(true), 120);
