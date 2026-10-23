@@ -70,6 +70,9 @@ h2 small { color: var(--moss); }
 .plot canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 .tip { position: absolute; left: 0; top: 0; pointer-events: none; will-change: transform; z-index: 5; background: var(--paper); border: 3px solid var(--bark-d);
   box-shadow: 3px 3px 0 var(--ink); font-size: 11px; padding: 3px 5px; white-space: nowrap; display: none; }
+.tip .tiplist { overflow-y: auto; margin: 2px 0; padding-right: 4px; }
+.tip .hl { background: var(--snout); outline: 2px solid var(--ink); }
+.tip .tipfoot { margin-top: 2px; padding-top: 2px; border-top: 2px dashed var(--bark); color: var(--bark); font-size: 10px; }
 .tip i { display: inline-block; width: 9px; height: 9px; border: 1px solid #000; margin-right: 4px; }
 #empty { grid-column: 1 / -1; padding: 40px; text-align: center; font-size: 22px; color: var(--fur-l); text-shadow: 3px 3px 0 var(--ink); }
 #empty canvas { width: 192px; height: 192px; display: block; margin: 0 auto 12px; }
@@ -275,9 +278,12 @@ class Chart {
     this.plot.append(this.base, this.over);
     this.g = this.base.getContext("2d", { alpha: false }); this.o = this.over.getContext("2d");
     this.data = null; this.dirty = true; this.visible = false; this.loading = false; this.last = 0; this.mouse = null; this.drag = null;
-    this.over.addEventListener("mousemove", (e) => { this.mouse = this.pos(e); if (this.drag) this.drag.x1 = this.mouse.x; this.hover(); });
-    this.over.addEventListener("mouseleave", () => { this.mouse = null; this.rect = null; this.hover(); });
-    this.over.addEventListener("mouseenter", () => { this.rect = null; });
+    this.over.addEventListener("mousemove", (e) => { this.mouse = this.pos(e); if (this.drag) this.drag.x1 = this.mouse.x;
+      if (e.shiftKey && !this.frozen) this.freeze(false); else if (!e.shiftKey && this.frozen && !this.frozen.pinned) this.unfreeze(); this.hover(); });
+    this.over.addEventListener("mouseleave", () => { this.mouse = null; this.rect = null; if (hovered === this) hovered = null; if (this.frozen && !this.frozen.pinned) this.unfreeze(); this.hover(); });
+    this.over.addEventListener("mouseenter", () => { this.rect = null; hovered = this; });
+    // While frozen the wheel scrolls the run list instead of the page.
+    this.over.addEventListener("wheel", (e) => { if (!this.frozen || !this.list) return; e.preventDefault(); this.list.scrollTop += e.deltaY; }, { passive: false });
     this.over.addEventListener("mousedown", (e) => { const p = this.pos(e); this.drag = { x0: p.x, x1: p.x }; dragging = this; });
     this.over.addEventListener("dblclick", () => setView(null));
   }
@@ -313,7 +319,7 @@ class Chart {
     } catch (e) { if (e.name !== "AbortError") { console.error(e); this.dirty = true; } }
     finally { this.loading = false; }
   }
-  draw() { queueDraw(this); }
+  draw() { this.list = null; queueDraw(this); }
   drawNow() {
     const t0 = performance.now(), d = this.data, W = this.W, H = this.H; if (!d || !W) return;
     const pw = W - M.l - M.r, ph = H - M.t - M.b; if (pw <= 0 || ph <= 0) return;
@@ -374,45 +380,72 @@ class Chart {
     const info = `${d.series.length} runs${d.missing ? ` \u00b7 ${d.missing} w/o data` : ""}`; if (this.info.textContent !== info) this.info.textContent = info;
   }
   // Overlay only: crosshair, highlighted nearest run, tooltip. Never touches the data layer.
+  freeze(pinned) { if (!this.data || !this.mouse) return; this.frozen = { xv: this.xv(this.mouse.x), mx: this.mouse.x, pinned }; this.list = null; this.hover(); }
+  unfreeze() { this.frozen = null; this.list = null; this.hl = null; this.hover(); }
+  // Overlay only: crosshair, highlighted nearest run, tooltip. Never touches the data layer.
   hover() {
     if (this.hoverRaf) return;
     this.hoverRaf = requestAnimationFrame(() => {
-      this.hoverRaf = 0; const o = this.o, d = this.data; o.clearRect(0, 0, this.W, this.H);
+      this.hoverRaf = 0; const o = this.o, d = this.data, F = this.frozen; o.clearRect(0, 0, this.W, this.H);
       if (this.drag) { o.fillStyle = "rgba(244,154,184,.45)"; o.fillRect(Math.min(this.drag.x0, this.drag.x1), M.t, Math.abs(this.drag.x1 - this.drag.x0), this.H - M.t - M.b); }
-      if (!d || !this.mouse || this.mouse.x < M.l) { if (this.tipOn) { this.tip.style.display = "none"; this.tipOn = false; } return; }
+      const mx = F ? F.mx : this.mouse?.x;
+      if (!d || mx == null || mx < M.l) { if (this.tipOn) { this.tip.style.display = "none"; this.tipOn = false; } return; }
       // Top-K nearest by screen distance in one pass, no allocation per series.
-      const K = 8, xv = this.xv(this.mouse.x), my = this.mouse.y, ph = this.H - M.t - M.b, ay = -ph / (d.y1 - d.y0), by = this.H - M.b - d.y0 * ay;
+      const K = 8, xv = F ? F.xv : this.xv(mx), my = this.mouse ? this.mouse.y : -1e9, ph = this.H - M.t - M.b, ay = -ph / (d.y1 - d.y0), by = this.H - M.b - d.y0 * ay;
       const topS = new Array(K), topV = new Float64Array(K), topD = new Float64Array(K).fill(Infinity); let count = 0;
+      const at = (s) => { const xs = s.xs; let lo = 0, hi = xs.length; while (lo < hi) { const m = (lo + hi) >> 1; if (xs[m] <= xv) lo = m + 1; else hi = m; } return lo; };
       for (const s of d.series) {
-        const xs = s.xs; let lo = 0, hi = xs.length; while (lo < hi) { const m = (lo + hi) >> 1; if (xs[m] <= xv) lo = m + 1; else hi = m; }
-        if (lo === 0) continue; count++;
+        const lo = at(s); if (lo === 0) continue; count++;
         const v = s.ys[lo - 1], dist = Math.abs(v * ay + by - my);
         if (dist >= topD[K - 1]) continue;
         let j = K - 1; while (j > 0 && topD[j - 1] > dist) { topD[j] = topD[j - 1]; topV[j] = topV[j - 1]; topS[j] = topS[j - 1]; j--; }
         topD[j] = dist; topV[j] = v; topS[j] = s;
       }
-      o.fillStyle = PAL.barkD; o.fillRect(Math.round(this.mouse.x), M.t, 1, ph);
-      const s = topS[0];
+      o.fillStyle = F ? "#ff00ff" : PAL.barkD; o.fillRect(Math.round(mx), M.t, F ? 2 : 1, ph);
+      const s = this.mouse ? topS[0] : null;
       if (s) { o.save(); o.beginPath(); o.rect(M.l, M.t, this.W - M.l - M.r, ph); o.clip();
         this.path(o, s); o.lineWidth = 3; o.strokeStyle = "#000"; o.stroke(); o.lineWidth = 1; o.strokeStyle = s.color; o.stroke(); o.restore();
-        const yy = Math.round(this.yp(topV[0])), xx = Math.round(this.mouse.x);
+        const yy = Math.round(this.yp(topV[0])), xx = Math.round(mx);
         o.fillStyle = "#000"; o.fillRect(xx - 2, yy - 2, 5, 5); o.fillStyle = s.color; o.fillRect(xx - 1, yy - 1, 3, 3); }
-      let html = `<div>${S.xkey ? fmtV(xv) : "t=" + fmtT(xv)}${count > K ? ` \u00b7 +${count - K} more` : ""}</div>`;
-      for (let i = 0; i < K && topS[i]; i++) html += `<div><i style="background:${topS[i].color}"></i>${esc(topS[i].name)}: ${fmtV(topV[i])}</div>`;
-      this.tip.innerHTML = html;
+      const head = `<div>${S.xkey ? fmtV(xv) : "t=" + fmtT(xv)} \u00b7 ${count} runs</div>`;
+      if (F) {
+        // Frozen: every run at this x, sorted by value; built once, then only the highlight moves.
+        if (!this.list) {
+          const all = [];
+          for (const r of d.series) { const lo = at(r); if (lo) all.push([r, r.ys[lo - 1]]); }
+          all.sort((a, b) => b[1] - a[1]);
+          this.tip.innerHTML = `${head}<div class="tiplist" style="max-height:${Math.max(60, ph * PX - 56)}px">${all.map(([r, v]) => `<div data-n="${esc(r.name)}"><i style="background:${r.color}"></i>${esc(r.name)}: ${fmtV(v)}</div>`).join("")}</div>
+            <div class="tipfoot">\u2744 frozen \u00b7 wheel scrolls \u00b7 ${F.pinned ? "click/Esc" : "release \u21e7"} to unfreeze</div>`;
+          this.list = this.tip.querySelector(".tiplist"); this.rows = new Map([...this.list.children].map((e) => [e.dataset.n, e])); this.hl = null;
+        }
+        const row = s && this.rows.get(s.name);
+        if (row !== this.hl) { this.hl?.classList.remove("hl"); this.hl = row; if (row) { row.classList.add("hl");
+          const L = this.list; if (row.offsetTop < L.scrollTop || row.offsetTop + row.offsetHeight > L.scrollTop + L.clientHeight) L.scrollTop = row.offsetTop - L.clientHeight / 2; } }
+      } else {
+        let html = head;
+        for (let i = 0; i < K && topS[i]; i++) html += `<div><i style="background:${topS[i].color}"></i>${esc(topS[i].name)}: ${fmtV(topV[i])}</div>`;
+        html += `<div class="tipfoot">hold \u21e7 or click to freeze${count > K ? ` &amp; scroll all ${count}` : ""}</div>`;
+        this.tip.innerHTML = html;
+      }
       if (!this.tipOn) { this.tip.style.display = "block"; this.tipOn = true; }
-      const cx = this.mouse.x * PX, flip = cx > this.cssW / 2;
+      const cx = mx * PX, flip = cx > this.cssW / 2;
       this.tip.style.transform = `translate(${flip ? cx - 14 : cx + 14}px,4px)${flip ? " translateX(-100%)" : ""}`;
     });
   }
   endDrag() { const d = this.drag; this.drag = null; if (!d) return;
-    if (Math.abs(d.x1 - d.x0) > 3 && this.data) { const a = this.xv(Math.min(d.x0, d.x1)), b = this.xv(Math.max(d.x0, d.x1)); setView({ x0: a, x1: b }); } else this.hover(); }
+    if (Math.abs(d.x1 - d.x0) > 3 && this.data) { const a = this.xv(Math.min(d.x0, d.x1)), b = this.xv(Math.max(d.x0, d.x1)); setView({ x0: a, x1: b }); }
+    else if (this.frozen?.pinned) this.unfreeze(); else { this.unfreeze(); this.freeze(true); } }
   path(o, s) { const xs = s.xs, ys = s.ys; o.beginPath(); let py = this.yp(ys[0]); o.moveTo(this.xp(xs[0]), py);
     for (let i = 1; i < xs.length; i++) { const x = this.xp(xs[i]), y = this.yp(ys[i]); o.lineTo(x, py); o.lineTo(x, y); py = y; } }
   destroy() { this.ctl?.abort(); cancelAnimationFrame(this.hoverRaf); this.data = null; if (dragging === this) dragging = null; }
 }
 // One window listener for drag-zoom, not one per chart.
-let dragging = null;
+let dragging = null, hovered = null;
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Shift" && hovered && !hovered.frozen && !e.repeat) hovered.freeze(false);
+  if (e.key === "Escape") for (const c of charts.values()) if (c.frozen) c.unfreeze();
+});
+window.addEventListener("keyup", (e) => { if (e.key === "Shift") for (const c of charts.values()) if (c.frozen && !c.frozen.pinned) c.unfreeze(); });
 window.addEventListener("mouseup", () => { const c = dragging; dragging = null; c?.endDrag(); });
 
 // Draws run in rAF under a per-frame budget, so no frame does more than ~FRAME_BUDGET ms
