@@ -505,10 +505,20 @@ const ro = new ResizeObserver((ents) => { for (const e of ents) { const c = e.ta
 const hdr = $("header"); let lastTop = 0;
 new ResizeObserver(() => document.body.style.setProperty("--hdr-h", hdr.offsetHeight + 8 + "px")).observe(hdr);
 hdr.addEventListener("transitionend", () => { for (const c of charts.values()) c.rect = null; });
+// Toggling the header resizes #panels, which clamps scrollTop and fires scroll events of its
+// own; ignore those while the slide runs, and never hide when the extra room would end scrolling.
+let hdrBusy = 0;
+function setHdr(hidden) {
+  if (document.body.classList.contains("hdr-hidden") === hidden) return;
+  document.body.classList.toggle("hdr-hidden", hidden); hdrBusy = performance.now() + 450;
+}
 $("#panels").addEventListener("scroll", (e) => {
   for (const c of charts.values()) c.rect = null;
-  const t = e.target.scrollTop;
-  if (t > lastTop + 4 && t > 60) document.body.classList.add("hdr-hidden"); else if (t < lastTop - 4 || t < 20) document.body.classList.remove("hdr-hidden");
+  const el = e.target, t = el.scrollTop;
+  if (performance.now() > hdrBusy) {
+    const room = el.scrollHeight - el.clientHeight > hdr.offsetHeight + 80;
+    if (t > lastTop + 4 && t > 60 && room) setHdr(true); else if (t < lastTop - 4 || t < 20) setHdr(false);
+  }
   lastTop = t;
 }, { passive: true });
 function setSide(hidden) { document.body.classList.toggle("noside", hidden); $("#sidetog").textContent = hidden ? "▶" : "◀"; localStorage.setItem("niu.noside", JSON.stringify(hidden)); }
