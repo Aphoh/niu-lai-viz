@@ -1088,6 +1088,7 @@ async function loadDash(name) {
   const r = await api("/api/dashboards/" + encodeURIComponent(name)); if (!r.ok) return { error: (await r.json()).error };
   const d = await r.json(), st = d.state || {};
   for (const k of [...S.panels]) removePanel(k);
+  S.panels = []; S.panelSet = new Set(); // panels restored from localStorage may not be on screen yet
   for (const k of st.panels || []) { delete S.yopt[k]; delete S.hsel[k]; }
   Object.assign(S.titles, st.titles || {}); Object.assign(S.yopt, st.yopt || {}); Object.assign(S.hsel, st.hsel || {}); for (const k of st.wide || []) S.wide.add(k);
   if (st.align) S.align = st.align; S.xkey = st.xkey || ""; S.smooth = st.smooth || 0;
