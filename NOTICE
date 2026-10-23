@@ -22,3 +22,10 @@ Modifications (Apache-2.0 section 4(b)):
                           relabeling rules (src/rules.rs); the CLI, config,
                           run layout (src/run.rs), HTTP server and UI are new.
   Modified source files carry a header noting the change.
+
+Third-party code bundled into the UI (crates/niu-lai-viz/ui/vendor/, unmodified):
+
+- marked v15.0.12, Copyright (c) 2011-2025 Christopher Jeffrey, MIT License.
+  https://github.com/markedjs/marked
+- DOMPurify 3.2.6, (c) Cure53 and other contributors, Apache License 2.0 /
+  Mozilla Public License 2.0. https://github.com/cure53/DOMPurify

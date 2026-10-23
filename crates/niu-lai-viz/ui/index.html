@@ -30,8 +30,8 @@ body.noside aside { display: none; }
 .ptitle { cursor: grab; } .panel.dragging { opacity: .4; }
 .panel.drop-before { box-shadow: -8px 0 0 #ff00ff, 5px 5px 0 rgba(36,20,10,.75); } .panel.drop-after { box-shadow: 8px 0 0 #ff00ff, 5px 5px 0 rgba(36,20,10,.75); }
 .ptitle .sbtn { min-width: 52px; } .ptitle .ybtn.on { background: #ff00ff; color: #fff; }
-#ydlg { padding: 10px; min-width: 300px; } #ydlg::backdrop { background: rgba(47, 90, 20, .55); }
-#ydlg form { display: flex; flex-direction: column; gap: 8px; } #ydlg label { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+#ydlg, #fdlg { padding: 10px; min-width: 300px; } #ydlg::backdrop, #fdlg::backdrop { background: rgba(47, 90, 20, .55); }
+#ydlg form, #fdlg form { display: flex; flex-direction: column; gap: 8px; } #ydlg label { display: flex; justify-content: space-between; gap: 8px; align-items: center; } #fdlg label { display: flex; flex-direction: column; gap: 2px; }
 #ydlg h2 { word-break: break-all; } #ydlg input, #ydlg select { width: 160px; }
 #logoslot { width: 84px; height: 84px; flex: none; }
 #logo { width: 84px; height: 84px; position: fixed; left: 0; top: 0; z-index: 50; pointer-events: none; filter: drop-shadow(3px 3px 0 rgba(36,20,10,.6)); }
@@ -101,6 +101,23 @@ body.chat-open #chat { display: flex; }
 .msg.tool { background: var(--grass); color: var(--fur-l); font-size: 11px; border-style: dashed; align-self: flex-start; }
 .msg.err { background: #d40000; color: #fff; }
 .msg code { background: rgba(36,20,10,.12); padding: 0 2px; }
+.msg.bot { white-space: normal; }
+.msg.bot > :first-child { margin-top: 0; } .msg.bot > :last-child { margin-bottom: 0; }
+.msg.bot p, .msg.bot ul, .msg.bot ol, .msg.bot pre, .msg.bot table, .msg.bot blockquote { margin: 4px 0; }
+.msg.bot ul, .msg.bot ol { padding-left: 18px; }
+.msg.bot h1, .msg.bot h2, .msg.bot h3, .msg.bot h4 { all: unset; display: block; font-weight: bold; margin: 6px 0 2px; text-decoration: underline wavy var(--snout); }
+.msg.bot pre { background: var(--ink); color: var(--fur-l); padding: 4px 6px; overflow-x: auto; white-space: pre; }
+.msg.bot pre code { background: none; padding: 0; }
+.msg.bot table { border-collapse: collapse; display: block; overflow-x: auto; font-size: 11px; }
+.msg.bot th, .msg.bot td { border: 2px solid var(--ink); padding: 1px 5px; text-align: left; white-space: nowrap; }
+.msg.bot th { background: var(--fur); }
+.msg.bot tr:nth-child(even) td { background: rgba(122,170,60,.18); }
+.msg.bot blockquote { border-left: 4px solid var(--snout); padding-left: 6px; }
+.msg.bot a { color: var(--grass); }
+.ptitle span.fx::before { content: "ƒ "; color: var(--snout); }
+#fexpr { width: 100%; min-height: 64px; font: inherit; }
+#fdlg { max-width: 560px; }
+#fdlg pre { white-space: pre-wrap; font-size: 11px; margin: 4px 0; }
 #chatform { display: flex; gap: 6px; } #chatin { flex: 1; resize: none; height: 54px; font: inherit; font-weight: normal; background: var(--paper);
   border: 3px solid; border-color: var(--bark-d) var(--fur-l) var(--fur-l) var(--bark-d); padding: 4px; }
 #chatcfg { display: none; flex-direction: column; gap: 4px; font-size: 12px; } #chat.cfg #chatcfg { display: flex; }
@@ -143,7 +160,7 @@ body.chat-open #chat { display: flex; }
     <section id="metrics-sec" class="bevel">
       <h2>Metrics <small id="keycount"></small></h2>
       <input id="keyfilter" type="text" placeholder="regex: loss|util">
-      <div class="row"><button id="addall">plot matches</button><button id="clear">clear plots</button></div>
+      <div class="row"><button id="addall">plot matches</button><button id="addfx" title="custom plot from a formula">ƒ custom</button><button id="clear">clear plots</button></div>
       <div class="row muted"><label>smooth <input id="smooth" type="range" min="0" max="0.99" step="0.01" value="0"></label><span id="smoothv">0</span></div>
       <div id="keys" class="vlist pit"><div class="spacer"></div></div>
     </section>
@@ -158,6 +175,17 @@ body.chat-open #chat { display: flex; }
   <label>y max <input id="ymax" type="number" step="any" placeholder="auto"></label>
   <div class="row"><button value="ok">ok</button><button value="auto">auto range</button><button value="cancel" formnovalidate>cancel</button></div>
 </form></dialog>
+<dialog id="fdlg" class="bevel"><form method="dialog">
+  <h2>ƒ custom plot</h2>
+  <label>title <input id="ftitle" type="text" placeholder="optional"></label>
+  <label>formula <textarea id="fexpr" placeholder="mean('utilization')"></textarea></label>
+  <pre>'key' is a series (exact key, or a regex hitting exactly one)
+sum/mean/min/max/count('regex')  across matching series
+rate(x[, window_s]) per second · delta(x[, w]) · abs log10 sqrt · + - * / numbers
+e.g.  rate('tokens_total', 30) / 1e3      'loss' / 'grad_norm'</pre>
+  <small id="ferr" style="color:#d40000"></small>
+  <div class="row"><button value="ok">plot</button><button value="cancel" formnovalidate>cancel</button></div>
+</form></dialog>
 <div id="chat" class="bevel">
   <h2><span>niu lai says</span><span><button id="chatcfgbtn" title="model settings">⚙ model</button><button id="chatnew" title="forget the conversation">new</button><button id="chatx">x</button></span></h2>
   <div id="chatcfg" class="pit" style="padding:6px">
@@ -170,6 +198,7 @@ body.chat-open #chat { display: flex; }
   <div id="chatlog" class="pit"></div>
   <form id="chatform"><textarea id="chatin" placeholder="moo? e.g. &quot;compare loss across lr, log scale&quot;  (enter sends, shift+enter newline)"></textarea><button id="chatsend">moo</button></form>
 </div>
+<script src="/vendor/marked.js"></script><script src="/vendor/purify.js"></script>
 <script>
 "use strict";
 const $ = (s) => document.querySelector(s);
@@ -237,9 +266,9 @@ const ls = (k, d) => { try { return JSON.parse(localStorage.getItem("niu." + k))
 const S = {
   runs: [], runByName: new Map(), shownRuns: [], picked: new Set(ls("picked", [])), firstLoad: localStorage.getItem("niu.picked") === null,
   keys: [], shownKeys: [], panels: ls("panels", []), smooth: 0, view: null,
-  align: ls("align", { mode: "start", key: "", above: 0 }), xkey: ls("xkey", ""), wide: new Set(ls("wide", [])), yopt: ls("yopt", {}),
+  align: ls("align", { mode: "start", key: "", above: 0 }), xkey: ls("xkey", ""), wide: new Set(ls("wide", [])), yopt: ls("yopt", {}), titles: ls("titles", {}),
 };
-const save = () => { for (const k of ["picked", "panels", "align", "xkey", "wide", "yopt"]) localStorage.setItem("niu." + k, JSON.stringify(k === "picked" || k === "wide" ? [...S[k]] : S[k])); };
+const save = () => { for (const k of ["picked", "panels", "align", "xkey", "wide", "yopt", "titles"]) localStorage.setItem("niu." + k, JSON.stringify(k === "picked" || k === "wide" ? [...S[k]] : S[k])); };
 // Garish run colors, handed out oldest-first so a run keeps its color as new runs appear.
 const RUN_COLORS = ["#ff00ff", "#0047ff", "#ff6a00", "#7a00ff", "#d40000", "#008a3e", "#e6d000", "#8b4513", "#00c9b0", "#ff3d8b", "#5a7d00", "#00a2ff"];
 const colorCache = new Map();
@@ -399,6 +428,7 @@ class Chart {
     if (S.view) { body.x0 = S.view.x0; body.x1 = S.view.x1; }
     if (S.align.mode !== "start" && S.align.key) body.align = { key: S.align.key, above: S.align.mode === "above" ? +S.align.above : null };
     if (S.xkey) body.x_key = S.xkey;
+    if (isFx(this.key)) { body.key = ""; body.expr = this.key.slice(1); }
     try {
       const t0 = performance.now(), buf = await (await api("/api/plot", body, this.ctl.signal)).arrayBuffer(), t1 = performance.now();
       const jl = new DataView(buf).getUint32(0, true), meta = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, jl)));
@@ -623,6 +653,19 @@ setSide(ls("noside", false));
   new ResizeObserver(() => { if (side.offsetWidth) localStorage.setItem("niu.sidew", side.offsetWidth); }).observe(side); }
 
 S.panelSet = new Set(S.panels);
+// Custom plots are panels whose key is "=" + formula (evaluated per run by the server, see src/expr.rs).
+const isFx = (k) => k.startsWith("=");
+async function checkFx(expr, runs = [...S.picked]) {
+  const res = await (await api("/api/stats", { runs, expr, limit: 300 })).json();
+  if (res.error) return { error: res.error };
+  if (!res.rows.length) return { error: "no picked run has the series this formula needs" };
+  return { rows: res.rows };
+}
+async function addFx(expr, title) {
+  expr = expr.trim(); const chk = await checkFx(expr); if (chk.error) return chk;
+  const key = "=" + expr; if (title) S.titles[key] = title; else delete S.titles[key];
+  addPanels([key], true); return { key, runs: chk.rows.length };
+}
 function addPanels(keys, scroll) {
   keys = keys.filter((k) => !S.panelSet.has(k)).slice(0, MAX_PANELS - S.panels.length);
   const frag = document.createDocumentFragment();
@@ -637,7 +680,7 @@ function addPanels(keys, scroll) {
     p.querySelector(".sbtn").onclick = () => { const o = S.yopt[key] || {}, order = ["lin", "log", "symlog"]; setYopt(key, { ...o, scale: order[(order.indexOf(o.scale || "lin") + 1) % 3] }); };
     p.querySelector(".ybtn").onclick = () => openYDialog(key);
     p.querySelector(".wbtn").onclick = () => { const on = p.classList.toggle("wide"); on ? S.wide.add(key) : S.wide.delete(key); save(); };
-    p.querySelector("span").textContent = key; p.querySelector("span").title = key;
+    { const sp = p.querySelector("span"); sp.textContent = S.titles[key] || (isFx(key) ? key.slice(1) : key); sp.title = isFx(key) ? "ƒ " + key.slice(1) : key; sp.classList.toggle("fx", isFx(key)); }
     p.querySelector(".xbtn").onclick = () => removePanel(key);
     frag.appendChild(p);
     const c = new Chart(key, p); p._chart = c; charts.set(key, c); c.sbtn = p.querySelector(".sbtn"); c.ybtn = p.querySelector(".ybtn");
@@ -649,7 +692,7 @@ function addPanels(keys, scroll) {
   $("#empty").style.display = S.panels.length ? "none" : ""; save(); keyList.schedule(true); pump();
 }
 function removePanel(key) {
-  S.wide.delete(key);
+  S.wide.delete(key); delete S.titles[key];
   const c = charts.get(key); if (!c) return; c.destroy(); vis.unobserve(c.panel); ro.unobserve(c.plot); c.panel.remove(); charts.delete(key);
   S.panels = S.panels.filter((k) => k !== key); S.panelSet.delete(key); $("#empty").style.display = S.panels.length ? "none" : ""; save(); keyList.schedule(true);
 }
@@ -714,6 +757,15 @@ $("#keyfilter").oninput = debounce(filterKeys, 60);
 $("#selall").onclick = () => { S.picked = new Set(S.shownRuns.map((r) => r.name)); save(); filterRuns(); picksChanged(); };
 $("#selnone").onclick = () => { S.picked.clear(); save(); filterRuns(); picksChanged(); };
 $("#addall").onclick = () => addPanels(S.shownKeys, true);
+$("#addfx").onclick = () => {
+  const dlg = $("#fdlg"); $("#ferr").textContent = "";
+  dlg.onclose = async () => {
+    if (dlg.returnValue !== "ok" || !$("#fexpr").value.trim()) return;
+    const r = await addFx($("#fexpr").value, $("#ftitle").value.trim());
+    if (r.error) { $("#ferr").textContent = r.error; dlg.showModal(); }
+  };
+  dlg.showModal(); $("#fexpr").focus();
+};
 $("#clear").onclick = () => { for (const k of [...S.panels]) removePanel(k); };
 $("#smooth").oninput = (e) => { S.smooth = +e.target.value; $("#smoothv").textContent = S.smooth.toFixed(2); smoothSoon(); };
 const smoothSoon = debounce(() => invalidate(true), 120);
@@ -752,20 +804,31 @@ const TOOLS = [
     parameters: { type: "object", properties: { regex: { type: "string", description: "case-insensitive regex filter" }, limit: { type: "number" } } },
     run: ({ regex = "", limit = 300 }) => { const re = new RegExp(regex, "i"), ks = S.keys.filter((k) => re.test(k)); return { total: ks.length, keys: ks.slice(0, limit) }; } },
   { name: "metric_stats", description: "Per run x series summary (n, first/last time and value, min, max, mean) for series matching key_regex. Use it to answer questions about values before charting. Times are seconds since run start, or since the T=0 anchor when aligned=true.",
-    parameters: { type: "object", properties: { key_regex: { type: "string" }, runs: { type: "array", items: { type: "string" }, description: "default: picked runs" }, t0: { type: "number" }, t1: { type: "number" }, aligned: { type: "boolean" } }, required: ["key_regex"] },
-    run: async ({ key_regex, runs, t0, t1, aligned }) => {
+    parameters: { type: "object", properties: { key_regex: { type: "string" }, expr: { type: "string", description: "instead of key_regex: summarise a custom-plot formula, one row per run" }, runs: { type: "array", items: { type: "string" }, description: "default: picked runs" }, t0: { type: "number" }, t1: { type: "number" }, aligned: { type: "boolean" } } },
+    run: async ({ key_regex = "", expr, runs, t0, t1, aligned }) => {
       const a = S.align, align = aligned && a.mode !== "start" && a.key ? { key: a.key, above: a.mode === "above" ? a.above : null } : null;
-      const res = await (await api("/api/stats", { runs: runs || [...S.picked], key: key_regex, t0, t1, align, limit: 300 })).json();
+      const res = await (await api("/api/stats", { runs: runs || [...S.picked], key: key_regex, expr, t0, t1, align, limit: 300 })).json();
       res.rows = res.rows.map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, r4(v)]))); return res; } },
   { name: "list_charts", description: "Charts currently shown, in order, with their y-axis settings.",
     parameters: { type: "object", properties: {} },
-    run: () => ({ charts: S.panels.map((k) => ({ key: k, wide: S.wide.has(k), ...(S.yopt[k] || {}) })), align: S.align, x_axis: S.xkey || "time", smoothing: S.smooth }) },
+    run: () => ({ charts: S.panels.map((k) => ({ key: k, ...(S.titles[k] ? { title: S.titles[k] } : {}), wide: S.wide.has(k), ...(S.yopt[k] || {}) })), align: S.align, x_axis: S.xkey || "time", smoothing: S.smooth }) },
   { name: "add_charts", description: "Add one chart per key (exact keys from list_metrics), optionally setting y scale/range and full width.",
     parameters: { type: "object", properties: { keys: { type: "array", items: { type: "string" } }, scale: { type: "string", enum: ["lin", "log", "symlog"] }, ymin: { type: "number" }, ymax: { type: "number" }, wide: { type: "boolean" } }, required: ["keys"] },
     run: ({ keys, scale, ymin, ymax, wide }) => { const { ok, unknown } = needKeys(keys);
       for (const k of ok) { if (scale || ymin != null || ymax != null) S.yopt[k] = pick({ ...(S.yopt[k] || {}), scale, min: ymin, max: ymax }, ["scale", "min", "max"]); if (wide) S.wide.add(k); }
       addPanels(ok, true); for (const k of ok) { const c = charts.get(k); if (c && c.data) { c.prep(); c.draw(); } }
       return { added: ok, unknown, hint: unknown.length ? "use list_metrics to find exact keys" : undefined }; } },
+  { name: "add_custom_plot", description: `Add a chart of a formula evaluated per run (one line per picked run). Grammar:
+'key' = a series (exact key, or regex matching exactly one key); quote with ' or ".
+sum/mean/min/max/count('regex') = combine all series in the run whose key matches (e.g. mean over GPUs).
+rate(x[, window_s]) = per-second derivative for counters (resets ignored); pass a window like 30 to smooth scrape jitter, like PromQL rate(x[30s]); delta(x[, window_s]); abs(x) log10(x) sqrt(x); + - * / ( ) and numbers.
+Series are joined on the union of timestamps, each holding its last value.
+Examples: mean('utilization_percent'); rate('tokens_total', 30) / 1e3; 'train_loss' / 'grad_norm'; max('temp') - min('temp').
+The formula is validated first; on error fix it and retry.`,
+    parameters: { type: "object", properties: { expr: { type: "string" }, title: { type: "string", description: "short chart title" }, scale: { type: "string", enum: ["lin", "log", "symlog"] }, ymin: { type: "number" }, ymax: { type: "number" }, wide: { type: "boolean" } }, required: ["expr"] },
+    run: async ({ expr, title, scale, ymin, ymax, wide }) => { const key = "=" + expr.trim();
+      if (scale || ymin != null || ymax != null) S.yopt[key] = pick({ scale, min: ymin, max: ymax }, ["scale", "min", "max"]); if (wide) S.wide.add(key);
+      const r = await addFx(expr, title); if (r.error) { delete S.yopt[key]; S.wide.delete(key); } return r; } },
   { name: "remove_charts", description: "Remove charts. keys=['*'] removes all.",
     parameters: { type: "object", properties: { keys: { type: "array", items: { type: "string" } } }, required: ["keys"] },
     run: ({ keys }) => { const ks = keys.includes("*") ? [...S.panels] : keys; ks.forEach(removePanel); return { removed: ks }; } },
@@ -788,9 +851,10 @@ function systemPrompt() {
 You help the user build charts by talking with them, using tools that drive the UI. Rules:
 - Find exact metric keys with list_metrics before add_charts. Never invent keys.
 - Use metric_stats to answer questions about values (best run, final loss, mean utilization) and cite the numbers.
+- For anything derived (averages across GPUs/labels, ratios, throughput from counters, spreads) use add_custom_plot; check numbers with metric_stats(expr=...). Custom chart keys start with "=".
 - Prefer few, useful charts. Suggest log scale for losses spanning orders of magnitude, alignment when runs start at different times, a step metric as x axis when comparing training progress.
 - If the request is ambiguous, ask one short question.
-- Reply briefly in plain text (no markdown tables or headings; short `- ` lines are fine), with the occasional moo.
+- Reply briefly. Markdown is rendered: use short lists, \`code\` for keys, and a small table when comparing runs. The occasional moo.
 State now: ${S.runs.length} runs (${S.picked.size} picked), ${S.keys.length} metric keys in picked runs, ${S.panels.length} charts, T=0 ${S.align.mode}${S.align.key ? " " + S.align.key : ""}, x axis ${S.xkey || "time"}.`;
 }
 let chatHist = [];
@@ -818,7 +882,9 @@ async function llmStep() {
 }
 function say(cls, text) {
   const el = document.createElement("div"); el.className = "msg " + cls;
-  el.innerHTML = esc(text).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+  if (cls === "bot" && window.marked && window.DOMPurify) el.innerHTML = DOMPurify.sanitize(marked.parse(text, { gfm: true, breaks: true }));
+  else el.innerHTML = esc(text).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+  for (const a of el.querySelectorAll("a")) { a.target = "_blank"; a.rel = "noopener noreferrer"; }
   $("#chatlog").appendChild(el); $("#chatlog").scrollTop = 1e9; return el;
 }
 async function chatSend(text) {

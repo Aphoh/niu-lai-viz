@@ -25,6 +25,8 @@ use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::broadcast;
 
 const INDEX: &str = include_str!("../ui/index.html");
+const MARKED_JS: &str = include_str!("../ui/vendor/marked.min.js");
+const PURIFY_JS: &str = include_str!("../ui/vendor/purify.min.js");
 /// Writer columns plus `metric_name_clean`, which compaction derives.
 const FIXED_COLUMNS: [&str; 10] = [
     "scraper_endpoint",
@@ -344,6 +346,9 @@ struct PlotReq {
     /// Plot against this series' value (e.g. a step counter) instead of time.
     #[serde(default)]
     x_key: Option<String>,
+    /// Custom-plot formula (see `expr`); replaces `key` when set.
+    #[serde(default)]
+    expr: Option<String>,
     /// EMA factor in [0, 1).
     #[serde(default)]
     smooth: f64,
@@ -384,8 +389,23 @@ fn map_run(
         },
         _ => 0.0,
     };
-    let Some(s) = data.get(&req.key) else {
-        return Ok(None);
+    let owned;
+    let s = match &req.expr {
+        Some(e) => {
+            let scope = crate::expr::Scope {
+                keys: &data.keys,
+                series: &data.series,
+            };
+            owned = crate::expr::eval(e, &scope)?;
+            match &owned {
+                Some(s) => s,
+                None => return Ok(None),
+            }
+        }
+        None => match data.get(&req.key) {
+            Some(s) => s,
+            None => return Ok(None),
+        },
     };
     let mut v = s.v.clone();
     if req.smooth > 0.0 {
@@ -597,7 +617,11 @@ async fn plot(State(app): State<Shared>, Json(req): Json<PlotReq>) -> Response {
 struct StatsReq {
     runs: Vec<String>,
     /// Regex over series keys.
+    #[serde(default)]
     key: String,
+    /// Custom-plot formula; summarised as one row per run instead of `key`.
+    #[serde(default)]
+    expr: Option<String>,
     /// Only samples with aligned time in [t0, t1].
     #[serde(default)]
     t0: Option<f64>,
@@ -633,6 +657,41 @@ struct StatsResp {
 
 /// Per run x series summary: the cheap aggregate an agent (or a human) reads
 /// before deciding what to chart.
+fn summarize(run: &str, key: &str, s: &Series, offset: f64, t0: f64, t1: f64) -> Option<StatRow> {
+    let mut row = StatRow {
+        run: run.to_string(),
+        key: key.to_string(),
+        n: 0,
+        t_first: f64::NAN,
+        t_last: f64::NAN,
+        first: f64::NAN,
+        last: f64::NAN,
+        min: f64::INFINITY,
+        max: f64::NEG_INFINITY,
+        mean: 0.0,
+    };
+    for (&t, &v) in s.t.iter().zip(&s.v) {
+        let (t, v) = (t as f64 - offset, v as f64);
+        if t < t0 || t > t1 || !v.is_finite() {
+            continue;
+        }
+        if row.n == 0 {
+            row.t_first = t;
+            row.first = v;
+        }
+        row.n += 1;
+        row.t_last = t;
+        row.last = v;
+        row.min = row.min.min(v);
+        row.max = row.max.max(v);
+        row.mean += v;
+    }
+    (row.n > 0).then(|| {
+        row.mean /= row.n as f64;
+        row
+    })
+}
+
 fn stats_blocking(app: &App, req: StatsReq) -> StatsResp {
     let re = match Regex::new(&req.key) {
         Ok(r) => r,
@@ -645,6 +704,7 @@ fn stats_blocking(app: &App, req: StatsReq) -> StatsResp {
     };
     let anchor_re = req.align.as_ref().and_then(|a| Regex::new(&a.key).ok());
     let limit = req.limit.unwrap_or(200).min(5000);
+    let err = std::sync::Mutex::new(None::<String>);
     let (t0, t1) = (
         req.t0.unwrap_or(f64::NEG_INFINITY),
         req.t1.unwrap_or(f64::INFINITY),
@@ -663,41 +723,21 @@ fn stats_blocking(app: &App, req: StatsReq) -> StatsResp {
                 },
                 _ => 0.0,
             };
-            for (key, s) in d.keys.iter().zip(&d.series) {
-                if !re.is_match(key) {
-                    continue;
-                }
-                let mut row = StatRow {
-                    run: r.clone(),
-                    key: key.clone(),
-                    n: 0,
-                    t_first: f64::NAN,
-                    t_last: f64::NAN,
-                    first: f64::NAN,
-                    last: f64::NAN,
-                    min: f64::INFINITY,
-                    max: f64::NEG_INFINITY,
-                    mean: 0.0,
+            if let Some(e) = &req.expr {
+                let scope = crate::expr::Scope {
+                    keys: &d.keys,
+                    series: &d.series,
                 };
-                for (&t, &v) in s.t.iter().zip(&s.v) {
-                    let (t, v) = (t as f64 - offset, v as f64);
-                    if t < t0 || t > t1 || !v.is_finite() {
-                        continue;
-                    }
-                    if row.n == 0 {
-                        row.t_first = t;
-                        row.first = v;
-                    }
-                    row.n += 1;
-                    row.t_last = t;
-                    row.last = v;
-                    row.min = row.min.min(v);
-                    row.max = row.max.max(v);
-                    row.mean += v;
+                match crate::expr::eval(e, &scope) {
+                    Ok(Some(s)) => out.extend(summarize(r, e, &s, offset, t0, t1)),
+                    Ok(None) => {}
+                    Err(e) => *err.lock().unwrap() = Some(e),
                 }
-                if row.n > 0 {
-                    row.mean /= row.n as f64;
-                    out.push(row);
+                return out;
+            }
+            for (key, s) in d.keys.iter().zip(&d.series) {
+                if re.is_match(key) {
+                    out.extend(summarize(r, key, s, offset, t0, t1));
                 }
             }
             out
@@ -709,8 +749,19 @@ fn stats_blocking(app: &App, req: StatsReq) -> StatsResp {
     StatsResp {
         rows,
         truncated,
-        error: None,
+        error: err.into_inner().unwrap(),
     }
+}
+
+fn js(src: &'static str) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "max-age=86400"),
+        ],
+        src,
+    )
+        .into_response()
 }
 
 async fn stats(State(app): State<Shared>, Json(req): Json<StatsReq>) -> Response {
@@ -809,6 +860,8 @@ pub fn router(root: PathBuf) -> Router {
     tokio::spawn(watch(app.clone()));
     Router::new()
         .route("/", get(|| async { Html(INDEX) }))
+        .route("/vendor/marked.js", get(|| async { js(MARKED_JS) }))
+        .route("/vendor/purify.js", get(|| async { js(PURIFY_JS) }))
         .route("/api/runs", get(runs))
         .route("/api/keys", post(keys))
         .route("/api/plot", post(plot))

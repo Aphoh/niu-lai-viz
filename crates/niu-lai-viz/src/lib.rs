@@ -1,5 +1,6 @@
 // Derived from tachometer-scraper via NVIDIA/srt-slurm (Apache-2.0); modified for niu-lai-viz. See NOTICE.
 pub mod config;
+pub mod expr;
 pub mod parse;
 pub mod rules;
 pub mod run;
