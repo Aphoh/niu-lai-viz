@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Spin up a zoo of fake jobs and scrape each into its own run.
+"""Spin up a zoo of fake jobs, scrape each into its own run, and serve the viewer.
 
-Some runs finish, one crashes (goes stale), the rest stay live.
-    python3 examples/demo.py --bin target/debug/niu-lai-viz --root runs
+Some runs finish, one crashes (goes stale), the rest stay live until Ctrl+C.
+    python3 examples/demo.py --bin target/release/niu-lai-viz --root runs
 """
 import argparse, os, signal, subprocess, sys, time
 from pathlib import Path
@@ -25,8 +25,14 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--bin", default="target/debug/niu-lai-viz")
 ap.add_argument("--root", default="runs")
 ap.add_argument("--base-port", type=int, default=9101)
+ap.add_argument("--addr", default="127.0.0.1:8737", help="where the viewer listens")
+ap.add_argument("--no-serve", action="store_true", help="only scrape; run `niu-lai-viz serve` yourself")
 a = ap.parse_args()
 cfg = Path(__file__).parent / "demo.toml"
+
+server = None
+if not a.no_serve:
+    server = subprocess.Popen([a.bin, "serve", "--root", a.root, "--addr", a.addr], stderr=subprocess.DEVNULL)
 
 procs = []
 for i, (name, lr, seed, speed, life) in enumerate(RUNS):
@@ -40,8 +46,12 @@ for i, (name, lr, seed, speed, life) in enumerate(RUNS):
     procs.append((name, life, time.time(), subprocess.Popen(cmd, stderr=subprocess.DEVNULL)))
     print(f"{name}: :{port}", flush=True)
 
+if server:
+    bar = "=" * 60
+    print(f"\n{bar}\n  niu-lai-viz is live:  http://{a.addr}\n  open it in a browser. Ctrl+C stops everything.\n{bar}\n", flush=True)
+
 try:
-    while procs:
+    while any(life is not None for _, life, _, _ in procs):
         time.sleep(1)
         for entry in list(procs):
             name, life, t0, p = entry
@@ -50,8 +60,15 @@ try:
                 p.wait()
                 print(f"{name}: {'killed' if life < 0 else 'finished'}", flush=True)
                 procs.remove(entry)
+    if server:
+        print(f"timed runs done; live runs keep going. viewer: http://{a.addr}", flush=True)
+    while True:
+        time.sleep(3600)
 except KeyboardInterrupt:
     for _, _, _, p in procs:
         p.send_signal(signal.SIGTERM)
     for _, _, _, p in procs:
         p.wait()
+finally:
+    if server:
+        server.terminate()
