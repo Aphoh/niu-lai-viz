@@ -190,6 +190,7 @@ body.chat-open #chat { display: flex; }
   <pre>'key' is a series (exact key, or a regex hitting exactly one)
 sum/mean/min/max/count('regex')  across matching series
 rate(x[, window_s]) per second · delta(x[, w]) · abs log10 sqrt · + - * / numbers
+quantile(q, 'histogram'[, window_s = 30])  e.g. p99: quantile(0.99, 'ttft')
 e.g.  rate('tokens_total', 30) / 1e3      'loss' / 'grad_norm'</pre>
   <small id="ferr" style="color:#d40000"></small>
   <div class="row"><button value="ok">plot</button><button value="cancel" formnovalidate>cancel</button></div>
@@ -950,7 +951,7 @@ const TOOLS = [
     run: async ({ names, mode = "set" }) => { const ok = names.filter((n) => S.runByName.has(n));
       if (mode === "set") S.picked = new Set(ok); else for (const n of ok) mode === "add" ? S.picked.add(n) : S.picked.delete(n);
       save(); filterRuns(); invalidate(true); await refreshKeys(); return { picked: [...S.picked], unknown: names.filter((n) => !S.runByName.has(n)) }; } },
-  { name: "list_metrics", description: "List metric series keys available in the picked runs. Keys look like `endpoint/metric{labels}` or `endpoint/metric [col=val]`. Keys starting with # are Prometheus histograms: add_charts draws them as one time x bucket heatmap per run (with p50/p99). Always use exact keys from here.",
+  { name: "list_metrics", description: "List metric series keys available in the picked runs. Keys look like `endpoint/metric{labels}` or `endpoint/metric [col=val]`. Keys starting with # are Prometheus histograms: add_charts draws them as one time x bucket heatmap per run (with p50/p90/p99); hist_stats reads their quantiles; quantile() in add_custom_plot charts one quantile as a line. Always use exact keys from here.",
     parameters: { type: "object", properties: { regex: { type: "string", description: "case-insensitive regex filter" }, limit: { type: "number" } } },
     run: ({ regex = "", limit = 300 }) => { const re = new RegExp(regex, "i"), ks = [...S.hists.map((h) => "#" + h), ...S.keys].filter((k) => re.test(k)); return { total: ks.length, keys: ks.slice(0, limit) }; } },
   { name: "metric_stats", description: "Per run x series summary (n, first/last time and value, min, max, mean) for series matching key_regex. Use it to answer questions about values before charting. Times are seconds since run start, or since the T=0 anchor when aligned=true.",
@@ -959,6 +960,14 @@ const TOOLS = [
       const a = S.align, align = aligned && a.mode !== "start" && a.key ? { key: a.key, above: a.mode === "above" ? a.above : null } : null;
       const res = await (await api("/api/stats", { runs: runs || [...S.picked], key: key_regex, expr, t0, t1, align, limit: 300 })).json();
       res.rows = res.rows.map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, r4(v)]))); return res; } },
+  { name: "hist_stats", description: "Per run x Prometheus histogram (# keys from list_metrics; regex ok): observations, observations/s and quantiles (PromQL histogram_quantile, linear within a bucket, so precision is limited by bucket bounds), plus per-bucket counts, over one time window. Use for latency questions like worst p99 TTFT, or tail after warmup (t0). Times as in metric_stats.",
+    parameters: { type: "object", properties: { key: { type: "string" }, runs: { type: "array", items: { type: "string" }, description: "default: picked runs" }, t0: { type: "number" }, t1: { type: "number" }, aligned: { type: "boolean" }, quantiles: { type: "array", items: { type: "number" }, description: "default [0.5, 0.9, 0.99]" }, buckets: { type: "boolean", description: "include per-bucket counts (default false)" } }, required: ["key"] },
+    run: async ({ key, runs, t0, t1, aligned, quantiles, buckets }) => {
+      const a = S.align, align = aligned && a.mode !== "start" && a.key ? { key: a.key, above: a.mode === "above" ? a.above : null } : null;
+      const res = await (await api("/api/hist_stats", { runs: runs || [...S.picked], key, t0, t1, align, quantiles, limit: 100 })).json();
+      res.rows = (res.rows || []).map(({ le, counts, quantiles: q, ...r }) => ({ ...Object.fromEntries(Object.entries(r).map(([k, v]) => [k, r4(v)])),
+        ...Object.fromEntries(Object.entries(q).map(([k, v]) => [k, r4(v)])), ...(buckets ? { buckets: le.map((l, i) => [l ?? "+Inf", r4(counts[i])]) } : {}) }));
+      return res; } },
   { name: "list_charts", description: "Charts currently shown, in order, with their y-axis settings.",
     parameters: { type: "object", properties: {} },
     run: () => ({ charts: S.panels.map((k) => ({ key: k, ...(S.titles[k] ? { title: S.titles[k] } : {}), wide: S.wide.has(k), ...(S.yopt[k] || {}) })), align: S.align, x_axis: S.xkey || "time", smoothing: S.smooth }) },
@@ -972,8 +981,9 @@ const TOOLS = [
 'key' = a series (exact key, or regex matching exactly one key); quote with ' or ".
 sum/mean/min/max/count('regex') = combine all series in the run whose key matches (e.g. mean over GPUs).
 rate(x[, window_s]) = per-second derivative for counters (resets ignored); pass a window like 30 to smooth scrape jitter, like PromQL rate(x[30s]); delta(x[, window_s]); abs(x) log10(x) sqrt(x); + - * / ( ) and numbers.
+quantile(q, 'histogram'[, window_s]) = quantile of a # histogram key (with or without #) over a trailing window (default 30 s), like PromQL histogram_quantile(q, rate(x_bucket[30s])).
 Series are joined on the union of timestamps, each holding its last value.
-Examples: mean('utilization_percent'); rate('tokens_total', 30) / 1e3; 'train_loss' / 'grad_norm'; max('temp') - min('temp').
+Examples: mean('utilization_percent'); rate('tokens_total', 30) / 1e3; 'train_loss' / 'grad_norm'; max('temp') - min('temp'); quantile(0.99, 'ttft_seconds', 60).
 The formula is validated first; on error fix it and retry.`,
     parameters: { type: "object", properties: { expr: { type: "string" }, title: { type: "string", description: "short chart title" }, scale: { type: "string", enum: ["lin", "log", "symlog"] }, ymin: { type: "number" }, ymax: { type: "number" }, wide: { type: "boolean" } }, required: ["expr"] },
     run: async ({ expr, title, scale, ymin, ymax, wide }) => { const key = "=" + expr.trim();
@@ -1002,6 +1012,7 @@ You help the user build charts by talking with them, using tools that drive the 
 - Find exact metric keys with list_metrics before add_charts. Never invent keys.
 - Use metric_stats to answer questions about values (best run, final loss, mean utilization) and cite the numbers.
 - For anything derived (averages across GPUs/labels, ratios, throughput from counters, spreads) use add_custom_plot; check numbers with metric_stats(expr=...). Custom chart keys start with "=".
+- Histograms (# keys, e.g. latencies): hist_stats for numbers (p50/p99, obs/s); add_charts for the heatmap; add_custom_plot with quantile(0.99, 'key') to compare one quantile across runs as lines.
 - Prefer few, useful charts. Suggest log scale for losses spanning orders of magnitude, alignment when runs start at different times, a step metric as x axis when comparing training progress.
 - If the request is ambiguous, ask one short question.
 - Reply briefly. Markdown is rendered: use short lists, \`code\` for keys, and a small table when comparing runs. The occasional moo.

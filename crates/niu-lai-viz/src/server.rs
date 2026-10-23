@@ -898,6 +898,174 @@ fn hist_blocking(app: &App, req: HistReq) -> HistResp {
     out
 }
 
+#[derive(Deserialize)]
+struct HistStatsReq {
+    runs: Vec<String>,
+    /// Histogram base key (optional `#`), exact or a regex.
+    key: String,
+    /// Window in aligned time; default the whole run.
+    #[serde(default)]
+    t0: Option<f64>,
+    #[serde(default)]
+    t1: Option<f64>,
+    #[serde(default)]
+    align: Option<Align>,
+    /// Default p50, p90, p99.
+    #[serde(default)]
+    quantiles: Option<Vec<f64>>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct HistStatRow {
+    run: String,
+    key: String,
+    t0: f64,
+    t1: f64,
+    observations: f64,
+    per_s: f64,
+    /// `p50` -> value; `null` without observations.
+    quantiles: BTreeMap<String, Option<f64>>,
+    /// Bucket upper bounds and observations in each, over the window.
+    le: Vec<Option<f64>>,
+    counts: Vec<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+#[derive(Serialize, Default)]
+struct HistStatsResp {
+    rows: Vec<HistStatRow>,
+    truncated: bool,
+    error: Option<String>,
+}
+
+fn qname(q: f64) -> String {
+    format!("p{}", (q * 1e4).round() / 1e2)
+}
+
+/// Per run x histogram: observations, rate and quantiles over one window.
+fn hist_stats_blocking(app: &App, req: HistStatsReq) -> HistStatsResp {
+    let pat = req.key.strip_prefix('#').unwrap_or(&req.key).to_string();
+    let re = match Regex::new(&pat) {
+        Ok(r) => r,
+        Err(e) => {
+            return HistStatsResp {
+                error: Some(e.to_string()),
+                ..Default::default()
+            }
+        }
+    };
+    let qs = req.quantiles.clone().unwrap_or(vec![0.5, 0.9, 0.99]);
+    if let Some(q) = qs.iter().find(|q| !(0.0..=1.0).contains(*q)) {
+        return HistStatsResp {
+            error: Some(format!("quantile {q} must be in [0, 1]")),
+            ..Default::default()
+        };
+    }
+    let anchor_re = req.align.as_ref().and_then(|a| Regex::new(&a.key).ok());
+    let limit = req.limit.unwrap_or(200).min(5000);
+    let mut rows: Vec<HistStatRow> = req
+        .runs
+        .par_iter()
+        .flat_map_iter(|r| {
+            let mut out = Vec::new();
+            let Ok(d) = app.run(r) else { return out };
+            let mut d = d.write().unwrap();
+            let offset = match (&req.align, anchor_re.as_ref()) {
+                (Some(a), Some(are)) => match d.anchor(a, are) {
+                    Some(o) => o,
+                    None => return out,
+                },
+                _ => 0.0,
+            };
+            let mut bases: Vec<String> = d
+                .keys
+                .iter()
+                .filter_map(|k| crate::hist::bucket_of(k).map(|(b, _)| b))
+                .collect();
+            bases.sort();
+            bases.dedup();
+            let exact = bases.contains(&pat);
+            for base in bases
+                .iter()
+                .filter(|b| if exact { **b == pat } else { re.is_match(b) })
+            {
+                let b = hist_buckets(&d, base);
+                let Some((_, inf)) = b.last().filter(|(le, _)| le.is_infinite()) else {
+                    continue;
+                };
+                let (Some(&first), Some(&last)) = (inf.t.first(), inf.t.last()) else {
+                    continue;
+                };
+                let w0 = req
+                    .t0
+                    .unwrap_or(f64::NEG_INFINITY)
+                    .max(first as f64 - offset);
+                let w1 = req.t1.unwrap_or(f64::INFINITY).min(last as f64 - offset);
+                if w1 <= w0 {
+                    continue;
+                }
+                // One window, gaps included: totals, not a heatmap.
+                let delta = |bs: &[(f64, &Series)]| {
+                    crate::hist::slices(bs, offset, &[w0, w1], f64::INFINITY)
+                        .pop()
+                        .flatten()
+                };
+                let counts = delta(&b);
+                let mut cum = 0.0;
+                let cums: Vec<f64> = counts
+                    .iter()
+                    .flatten()
+                    .map(|&c| {
+                        cum += c as f64;
+                        cum
+                    })
+                    .collect();
+                let les: Vec<f64> = b.iter().map(|(le, _)| *le).collect();
+                out.push(HistStatRow {
+                    run: r.clone(),
+                    key: format!("#{base}"),
+                    t0: w0,
+                    t1: w1,
+                    observations: cum,
+                    per_s: cum / (w1 - w0),
+                    quantiles: qs
+                        .iter()
+                        .map(|&q| (qname(q), crate::hist::quantile(&les, &cums, q)))
+                        .collect(),
+                    le: les.iter().map(|le| le.is_finite().then_some(*le)).collect(),
+                    counts: counts
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|c| c as f64)
+                        .collect(),
+                    error: cums
+                        .is_empty()
+                        .then(|| "counter reset inside the window; narrow t0/t1".into()),
+                });
+            }
+            out
+        })
+        .collect();
+    rows.sort_by(|a, b| a.key.cmp(&b.key).then(a.run.cmp(&b.run)));
+    let truncated = rows.len() > limit;
+    rows.truncate(limit);
+    HistStatsResp {
+        rows,
+        truncated,
+        error: None,
+    }
+}
+
+async fn hist_stats(State(app): State<Shared>, Json(req): Json<HistStatsReq>) -> Response {
+    let out = tokio::task::spawn_blocking(move || hist_stats_blocking(&app, req))
+        .await
+        .unwrap_or_default();
+    Json(out).into_response()
+}
+
 async fn hist(State(app): State<Shared>, Json(req): Json<HistReq>) -> Response {
     let out = tokio::task::spawn_blocking(move || hist_blocking(&app, req))
         .await
@@ -1167,6 +1335,7 @@ pub fn router(root: PathBuf) -> Router {
         .route("/api/plot", post(plot))
         .route("/api/stats", post(stats))
         .route("/api/hist", post(hist))
+        .route("/api/hist_stats", post(hist_stats))
         .route("/api/dashboards", get(dash_list))
         .route(
             "/api/dashboards/{name}",

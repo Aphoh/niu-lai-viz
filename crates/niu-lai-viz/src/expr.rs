@@ -8,7 +8,7 @@
 //! A quoted string is a series key (exact, else a regex matching exactly one
 //! key). Series are combined on the union of their timestamps, each holding
 //! its latest value. Functions: sum/mean/min/max/count(regex), rate(x[, window_s]),
-//! delta(x[, window_s]), abs(x), log10(x), sqrt(x).
+//! delta(x[, window_s]), abs(x), log10(x), sqrt(x), quantile(q, 'histogram'[, window_s]).
 use crate::server::Series;
 use regex::Regex;
 
@@ -349,6 +349,17 @@ impl Scope<'_> {
                     None => Ok(None),
                 }
             }
+            "quantile" => {
+                let (q, pat, w) = match args {
+                    [Expr::Num(q), Expr::Key(p)] => (*q, p, 30.0),
+                    [Expr::Num(q), Expr::Key(p), Expr::Num(w)] => (*q, p, *w),
+                    _ => return Err("quantile(q, 'histogram'[, window_s]), e.g. quantile(0.99, 'ttft', 30)".into()),
+                };
+                if !(0.0..=1.0).contains(&q) {
+                    return Err(format!("quantile: q={q} must be in [0, 1]"));
+                }
+                self.quantile(q, pat, w)
+            }
             "abs" | "log10" | "sqrt" => {
                 let f: fn(f64) -> f64 = match name {
                     "abs" => f64::abs,
@@ -358,9 +369,66 @@ impl Scope<'_> {
                 Ok(self.eval(one()?)?.map(|v| map(v, f)))
             }
             _ => Err(format!(
-                "unknown function {name}(); have sum mean min max count rate delta abs log10 sqrt"
+                "unknown function {name}(); have sum mean min max count rate delta abs log10 sqrt quantile"
             )),
         }
+    }
+}
+
+impl Scope<'_> {
+    /// Quantile of a Prometheus histogram over a trailing window, like
+    /// `histogram_quantile(q, rate(x_bucket[w]))`. `pat` is a histogram base key
+    /// (`/api/keys` `hists`, optional `#`), exact or a regex matching one.
+    fn quantile(&self, q: f64, pat: &str, w: f64) -> R<Val> {
+        let pat = pat.strip_prefix('#').unwrap_or(pat);
+        let re = Regex::new(pat).map_err(|e| e.to_string())?;
+        let mut fams: std::collections::BTreeMap<String, Vec<(f64, usize)>> = Default::default();
+        for (i, k) in self.keys.iter().enumerate() {
+            if let Some((base, le)) = crate::hist::bucket_of(k) {
+                fams.entry(base).or_default().push((le, i));
+            }
+        }
+        let base = match fams.keys().find(|b| *b == pat) {
+            Some(b) => b.clone(),
+            None => {
+                let hits: Vec<&String> = fams.keys().filter(|b| re.is_match(b)).collect();
+                match hits.len() {
+                    0 => return Ok(None),
+                    1 => hits[0].clone(),
+                    n => {
+                        return Err(format!(
+                            "'{pat}' matches {n} histograms (e.g. {}); use an exact one",
+                            hits[0]
+                        ))
+                    }
+                }
+            }
+        };
+        let mut b = fams.remove(&base).unwrap_or_default();
+        b.sort_by(|x, y| x.0.total_cmp(&y.0));
+        b.dedup_by(|x, y| x.0 == y.0);
+        if !b.last().is_some_and(|x| x.0.is_infinite()) {
+            return Err(format!("histogram {base} has no +Inf bucket"));
+        }
+        let owned: Vec<(Vec<f64>, Vec<f64>)> =
+            b.iter().map(|&(_, i)| to_f64(&self.series[i])).collect();
+        let refs: Vec<(&[f64], &[f64])> = owned.iter().map(|(t, v)| (&t[..], &v[..])).collect();
+        let (t, cols) = align(&refs);
+        let le: Vec<f64> = b.iter().map(|x| x.0).collect();
+        let mut out = vec![f64::NAN; t.len()];
+        let mut j = 0;
+        for i in 1..t.len() {
+            while j + 1 < i && t[j + 1] <= t[i] - w {
+                j += 1;
+            }
+            let j = if w > 0.0 { j } else { i - 1 };
+            let d: Vec<f64> = cols.iter().map(|c| c[i] - c[j]).collect();
+            // NaN: a bucket not scraped yet; negative +Inf: counter reset.
+            if d.iter().all(|x| x.is_finite()) && d[d.len() - 1] >= 0.0 {
+                out[i] = crate::hist::quantile(&le, &d, q).unwrap_or(f64::NAN);
+            }
+        }
+        Ok(Some(Val::Ser(t, out)))
     }
 }
 
@@ -440,5 +508,40 @@ mod tests {
         assert!(eval("'util'", &sc).err().unwrap().contains("matches 2"));
         assert!(eval("'nope'", &sc).unwrap().is_none());
         assert!(eval("1 + 2", &sc).is_err());
+    }
+
+    #[test]
+    fn histogram_quantile_over_window() {
+        let t = [0., 10., 20., 30.];
+        let k: Vec<String> = [
+            r#"ep/lat_bucket{le="1"}"#,
+            r#"ep/lat_bucket{le="2"}"#,
+            r#"ep/lat_bucket{le="+Inf"}"#,
+            "ep/other_bucket{le=\"+Inf\"}",
+        ]
+        .map(String::from)
+        .to_vec();
+        // 10 obs/10s, first all <=1, then all in (1, 2].
+        let v = vec![
+            s(&t, &[0., 10., 10., 10.]),
+            s(&t, &[0., 10., 20., 30.]),
+            s(&t, &[0., 10., 20., 30.]),
+            s(&t, &[0., 1., 2., 3.]),
+        ];
+        let sc = Scope {
+            keys: &k,
+            series: &v,
+        };
+        let p = eval("quantile(0.5, 'ep/lat', 10)", &sc).unwrap().unwrap();
+        assert!(p.v[0].is_nan());
+        assert_eq!(&p.v[1..], &[0.5, 1.5, 1.5]);
+        let wide = eval("quantile(0.5, '#ep/lat', 30)", &sc).unwrap().unwrap();
+        assert_eq!(wide.v[3], 1.25, "30 obs: 10 <=1, 20 in (1,2]");
+        assert!(eval("quantile(0.5, 'ep/')", &sc)
+            .err()
+            .unwrap()
+            .contains("matches 2"));
+        assert!(eval("quantile(2, 'lat')", &sc).is_err());
+        assert!(eval("quantile(0.5, 'nope')", &sc).unwrap().is_none());
     }
 }

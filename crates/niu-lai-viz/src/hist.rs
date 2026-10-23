@@ -29,6 +29,32 @@ pub fn bucket_of(key: &str) -> Option<(String, f64)> {
     Some((base, le))
 }
 
+/// PromQL `histogram_quantile`: `cum[b]` = observations <= `le[b]` (ascending,
+/// last bucket +Inf), linear within the bucket holding the rank; a rank in the
+/// +Inf bucket returns the highest finite bound. `None` without observations.
+pub fn quantile(le: &[f64], cum: &[f64], q: f64) -> Option<f64> {
+    let total = *cum.last()?;
+    if !(0.0..=1.0).contains(&q) || total.is_nan() || total <= 0.0 || le.len() != cum.len() {
+        return None;
+    }
+    let rank = q * total;
+    let (mut below, mut lo) = (0.0, 0.0);
+    for (&hi, &c) in le.iter().zip(cum) {
+        let c = c.max(below); // buckets scraped a moment apart can be off by a few
+        if c >= rank && c > below {
+            if hi.is_infinite() {
+                return Some(lo);
+            }
+            return Some(lo + (hi - lo) * (rank - below) / (c - below));
+        }
+        below = c;
+        if hi.is_finite() {
+            lo = hi;
+        }
+    }
+    Some(lo)
+}
+
 fn split_labels(body: &str) -> Vec<&str> {
     let (mut out, mut start, mut quoted) = (Vec::new(), 0, false);
     for (i, c) in body.char_indices() {
@@ -198,6 +224,20 @@ mod tests {
             vec![Some(vec![2.0, 1.0]); 4],
             "short gaps are spread"
         );
+    }
+
+    #[test]
+    fn quantiles_like_promql() {
+        let le = [1.0, 2.0, 4.0, f64::INFINITY];
+        let cum = [10.0, 30.0, 40.0, 40.0];
+        assert_eq!(quantile(&le, &cum, 0.25), Some(1.0));
+        assert_eq!(quantile(&le, &cum, 0.5), Some(1.5));
+        assert_eq!(quantile(&le, &cum, 0.1), Some(0.4));
+        assert_eq!(quantile(&le, &cum, 1.0), Some(4.0));
+        let tail = [10.0, 30.0, 40.0, 50.0];
+        assert_eq!(quantile(&le, &tail, 0.99), Some(4.0), "+Inf bucket");
+        assert_eq!(quantile(&le, &[0.0; 4], 0.5), None);
+        assert_eq!(quantile(&le, &[10.0, 9.0, 20.0, 20.0], 0.75), Some(3.0));
     }
 
     #[test]
