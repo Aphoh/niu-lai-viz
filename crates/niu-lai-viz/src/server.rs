@@ -792,7 +792,7 @@ struct HistRun {
 struct HistResp {
     x0: f64,
     x1: f64,
-    /// Windows actually used: at most `slices`, but each spans >= 3 mean scrape intervals, so scrape jitter does not punch holes.
+    /// Windows actually used: at most `slices`, each >= 2 mean scrape intervals.
     slices: usize,
     runs: Vec<HistRun>,
     errors: BTreeMap<String, String>,
@@ -862,12 +862,14 @@ fn hist_blocking(app: &App, req: HistReq) -> HistResp {
         out.x1 = out.x0 + 1.0;
     }
     let n = if gap > 0.0 {
-        let fit = ((out.x1 - out.x0) / (3.0 * gap)).floor().max(1.0) as usize;
+        let fit = ((out.x1 - out.x0) / (2.0 * gap)).floor().max(1.0) as usize;
         req.slices.clamp(1, 4096).min(fit)
     } else {
         req.slices.clamp(1, 4096)
     };
     out.slices = n;
+    // Scrape gaps up to this long are jitter (counts spread across them); longer ones are outages.
+    let max_gap = (10.0 * gap).max(5.0);
     let edges: Vec<f64> = (0..=n)
         .map(|k| out.x0 + (out.x1 - out.x0) * k as f64 / n as f64)
         .collect();
@@ -887,7 +889,7 @@ fn hist_blocking(app: &App, req: HistReq) -> HistResp {
                     .iter()
                     .map(|(le, _)| le.is_finite().then_some(*le))
                     .collect(),
-                counts: crate::hist::slices(&b, offset, &edges),
+                counts: crate::hist::slices(&b, offset, &edges, max_gap),
             })
         })
         .collect();

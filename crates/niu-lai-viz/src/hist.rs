@@ -47,21 +47,43 @@ fn split_labels(body: &str) -> Vec<&str> {
     out
 }
 
-/// Cumulative value at `t`: the latest sample at or before it, else the first.
-fn at(s: &Series, t: f64) -> Option<f64> {
+/// Cumulative value at `t`, interpolated between the scrapes around it when
+/// they are at most `max_gap` apart (else the last one before; else the first).
+fn at(s: &Series, t: f64, max_gap: f64) -> Option<f64> {
     if s.t.is_empty() {
         return None;
     }
     let i = s.t.partition_point(|&x| (x as f64) <= t);
-    Some(s.v[i.saturating_sub(1)] as f64)
+    if i == 0 || i == s.t.len() {
+        return Some(s.v[i.saturating_sub(1)] as f64);
+    }
+    let (t0, t1) = (s.t[i - 1] as f64, s.t[i] as f64);
+    let (v0, v1) = (s.v[i - 1] as f64, s.v[i] as f64);
+    Some(if t1 - t0 <= max_gap {
+        v0 + (v1 - v0) * (t - t0) / (t1 - t0)
+    } else {
+        v0
+    })
 }
 
 /// Observations per bucket in each window `[edges[k], edges[k+1]]` (aligned
-/// time; raw time = aligned + `offset`), for buckets sorted by `le`. `None`
-/// marks a window outside the data or one spanning a counter reset.
-pub fn slices(buckets: &[(f64, &Series)], offset: f64, edges: &[f64]) -> Vec<Option<Vec<f32>>> {
-    let cum =
-        |t: f64| -> Option<Vec<f64>> { buckets.iter().map(|(_, s)| at(s, t + offset)).collect() };
+/// time; raw time = aligned + `offset`), for buckets sorted by `le`. Counts are
+/// spread linearly across scrape intervals up to `max_gap` long, so windows
+/// narrower than the scrape jitter neither spike nor go blank. `None` marks a
+/// window outside the data, inside a longer gap (scraper down), or spanning a
+/// counter reset.
+pub fn slices(
+    buckets: &[(f64, &Series)],
+    offset: f64,
+    edges: &[f64],
+    max_gap: f64,
+) -> Vec<Option<Vec<f32>>> {
+    let cum = |t: f64| -> Option<Vec<f64>> {
+        buckets
+            .iter()
+            .map(|(_, s)| at(s, t + offset, max_gap))
+            .collect()
+    };
     let (mut first, mut last) = (f64::INFINITY, f64::NEG_INFINITY);
     for (_, s) in buckets {
         if let (Some(&a), Some(&b)) = (s.t.first(), s.t.last()) {
@@ -78,10 +100,14 @@ pub fn slices(buckets: &[(f64, &Series)], offset: f64, edges: &[f64]) -> Vec<Opt
                 if w[1] <= first || w[0] >= last {
                     return None;
                 }
-                // No scrape inside the window (e.g. scraper down): unknown, not zero.
+                // Inside a scrape gap longer than max_gap: unknown, not zero.
                 let (_, inf) = buckets.last()?;
                 let i = inf.t.partition_point(|&x| (x as f64) <= w[0] + offset);
-                if inf.t.get(i).is_none_or(|&x| x as f64 > w[1] + offset) {
+                if i > 0
+                    && inf.t.get(i).is_some_and(|&x| {
+                        x as f64 > w[1] + offset && (x - inf.t[i - 1]) as f64 > max_gap
+                    })
+                {
                     return None;
                 }
                 let (a, b) = (prev.as_ref()?, next.as_ref()?);
@@ -139,35 +165,38 @@ mod tests {
     fn windows_difference_time_and_le() {
         let t = [0.0, 10.0, 20.0, 30.0];
         let (b1, inf) = (s(&t, &[0., 5., 8., 8.]), s(&t, &[0., 6., 12., 13.]));
-        let out = slices(
-            &[(1.0, &b1), (f64::INFINITY, &inf)],
-            0.0,
-            &[0., 10., 20., 30., 40.],
-        );
+        let b = [(1.0, &b1), (f64::INFINITY, &inf)];
+        let out = slices(&b, 0.0, &[0., 10., 20., 30., 40.], 15.0);
         assert_eq!(out[0], Some(vec![5.0, 1.0]));
         assert_eq!(out[1], Some(vec![3.0, 3.0]));
         assert_eq!(out[2], Some(vec![0.0, 1.0]));
         assert_eq!(out[3], None, "after the last sample");
-        let shifted = slices(
-            &[(1.0, &b1), (f64::INFINITY, &inf)],
-            10.0,
-            &[-20., -10., 0.],
-        );
+        let shifted = slices(&b, 10.0, &[-20., -10., 0.], 15.0);
         assert_eq!(shifted, vec![None, Some(vec![5.0, 1.0])], "aligned time");
+        let half = slices(&b, 0.0, &[10., 15., 20.], 15.0);
+        assert_eq!(
+            half,
+            vec![Some(vec![1.5, 1.5]); 2],
+            "spread within a scrape interval"
+        );
     }
 
     #[test]
-    fn scrape_gap_is_unknown() {
+    fn scrape_gaps() {
         let t = [0.0, 10.0, 40.0];
         let (b1, inf) = (s(&t, &[0., 2., 8.]), s(&t, &[0., 3., 12.]));
-        let out = slices(
-            &[(1.0, &b1), (f64::INFINITY, &inf)],
-            0.0,
-            &[0., 10., 20., 30., 40.],
-        );
+        let b = [(1.0, &b1), (f64::INFINITY, &inf)];
+        let edges = [0., 10., 20., 30., 40.];
+        let outage = slices(&b, 0.0, &edges, 5.0);
         assert_eq!(
-            out,
+            outage,
             vec![Some(vec![2.0, 1.0]), None, None, Some(vec![6.0, 3.0])]
+        );
+        let jitter = slices(&b, 0.0, &edges, 100.0);
+        assert_eq!(
+            jitter,
+            vec![Some(vec![2.0, 1.0]); 4],
+            "short gaps are spread"
         );
     }
 
@@ -175,7 +204,12 @@ mod tests {
     fn reset_and_noise() {
         let t = [0.0, 10.0, 20.0];
         let (b1, inf) = (s(&t, &[4., 9., 1.]), s(&t, &[5., 10., 2.]));
-        let out = slices(&[(1.0, &b1), (f64::INFINITY, &inf)], 0.0, &[0., 10., 20.]);
+        let out = slices(
+            &[(1.0, &b1), (f64::INFINITY, &inf)],
+            0.0,
+            &[0., 10., 20.],
+            15.0,
+        );
         assert_eq!(out, vec![Some(vec![5.0, 0.0]), None]);
     }
 }
