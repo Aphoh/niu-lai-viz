@@ -593,6 +593,133 @@ async fn plot(State(app): State<Shared>, Json(req): Json<PlotReq>) -> Response {
         .into_response()
 }
 
+#[derive(Deserialize)]
+struct StatsReq {
+    runs: Vec<String>,
+    /// Regex over series keys.
+    key: String,
+    /// Only samples with aligned time in [t0, t1].
+    #[serde(default)]
+    t0: Option<f64>,
+    #[serde(default)]
+    t1: Option<f64>,
+    #[serde(default)]
+    align: Option<Align>,
+    /// Max matched series returned.
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct StatRow {
+    run: String,
+    key: String,
+    n: usize,
+    t_first: f64,
+    t_last: f64,
+    first: f64,
+    last: f64,
+    min: f64,
+    max: f64,
+    mean: f64,
+}
+
+#[derive(Serialize, Default)]
+struct StatsResp {
+    rows: Vec<StatRow>,
+    truncated: bool,
+    error: Option<String>,
+}
+
+/// Per run x series summary: the cheap aggregate an agent (or a human) reads
+/// before deciding what to chart.
+fn stats_blocking(app: &App, req: StatsReq) -> StatsResp {
+    let re = match Regex::new(&req.key) {
+        Ok(r) => r,
+        Err(e) => {
+            return StatsResp {
+                error: Some(e.to_string()),
+                ..Default::default()
+            }
+        }
+    };
+    let anchor_re = req.align.as_ref().and_then(|a| Regex::new(&a.key).ok());
+    let limit = req.limit.unwrap_or(200).min(5000);
+    let (t0, t1) = (
+        req.t0.unwrap_or(f64::NEG_INFINITY),
+        req.t1.unwrap_or(f64::INFINITY),
+    );
+    let mut rows: Vec<StatRow> = req
+        .runs
+        .par_iter()
+        .flat_map_iter(|r| {
+            let mut out = Vec::new();
+            let Ok(d) = app.run(r) else { return out };
+            let mut d = d.write().unwrap();
+            let offset = match (&req.align, anchor_re.as_ref()) {
+                (Some(a), Some(are)) => match d.anchor(a, are) {
+                    Some(o) => o,
+                    None => return out,
+                },
+                _ => 0.0,
+            };
+            for (key, s) in d.keys.iter().zip(&d.series) {
+                if !re.is_match(key) {
+                    continue;
+                }
+                let mut row = StatRow {
+                    run: r.clone(),
+                    key: key.clone(),
+                    n: 0,
+                    t_first: f64::NAN,
+                    t_last: f64::NAN,
+                    first: f64::NAN,
+                    last: f64::NAN,
+                    min: f64::INFINITY,
+                    max: f64::NEG_INFINITY,
+                    mean: 0.0,
+                };
+                for (&t, &v) in s.t.iter().zip(&s.v) {
+                    let (t, v) = (t as f64 - offset, v as f64);
+                    if t < t0 || t > t1 || !v.is_finite() {
+                        continue;
+                    }
+                    if row.n == 0 {
+                        row.t_first = t;
+                        row.first = v;
+                    }
+                    row.n += 1;
+                    row.t_last = t;
+                    row.last = v;
+                    row.min = row.min.min(v);
+                    row.max = row.max.max(v);
+                    row.mean += v;
+                }
+                if row.n > 0 {
+                    row.mean /= row.n as f64;
+                    out.push(row);
+                }
+            }
+            out
+        })
+        .collect();
+    rows.sort_by(|a, b| a.key.cmp(&b.key).then(a.run.cmp(&b.run)));
+    let truncated = rows.len() > limit;
+    rows.truncate(limit);
+    StatsResp {
+        rows,
+        truncated,
+        error: None,
+    }
+}
+
+async fn stats(State(app): State<Shared>, Json(req): Json<StatsReq>) -> Response {
+    let out = tokio::task::spawn_blocking(move || stats_blocking(&app, req))
+        .await
+        .unwrap_or_default();
+    Json(out).into_response()
+}
+
 async fn events(State(app): State<Shared>) -> impl IntoResponse {
     let rx = app.tx.subscribe();
     let stream = futures::stream::unfold(rx, |mut rx| async move {
@@ -685,6 +812,7 @@ pub fn router(root: PathBuf) -> Router {
         .route("/api/runs", get(runs))
         .route("/api/keys", post(keys))
         .route("/api/plot", post(plot))
+        .route("/api/stats", post(stats))
         .route("/api/events", get(events))
         .with_state(app)
 }

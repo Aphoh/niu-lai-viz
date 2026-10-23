@@ -88,6 +88,24 @@ h2 small { color: var(--moss); }
 #empty { grid-column: 1 / -1; padding: 40px; text-align: center; font-size: 22px; color: var(--fur-l); text-shadow: 3px 3px 0 var(--ink); }
 #empty canvas { width: 192px; height: 192px; display: block; margin: 0 auto 12px; }
 .muted { color: var(--bark); font-size: 11px; }
+body.hdr-hidden #sidetog { position: fixed; left: 6px; top: 6px; z-index: 60; height: 34px; box-shadow: 3px 3px 0 rgba(36,20,10,.75); }
+#logo { pointer-events: auto; cursor: pointer; }
+#chat { position: fixed; right: 16px; bottom: 22px; width: min(460px, calc(100vw - 32px)); height: min(640px, calc(100vh - 60px)); z-index: 70;
+  display: none; flex-direction: column; gap: 6px; padding: 8px; }
+body.chat-open #chat { display: flex; }
+#chat h2 button { font-size: 11px; padding: 0 6px; margin-left: 4px; text-shadow: none; }
+#chatlog { flex: 1; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 6px; font-weight: normal; }
+.msg { padding: 4px 6px; white-space: pre-wrap; word-break: break-word; border: 2px solid var(--ink); }
+.msg.user { background: var(--snout); align-self: flex-end; max-width: 85%; }
+.msg.bot { background: var(--fur-l); max-width: 95%; }
+.msg.tool { background: var(--grass); color: var(--fur-l); font-size: 11px; border-style: dashed; align-self: flex-start; }
+.msg.err { background: #d40000; color: #fff; }
+.msg code { background: rgba(36,20,10,.12); padding: 0 2px; }
+#chatform { display: flex; gap: 6px; } #chatin { flex: 1; resize: none; height: 54px; font: inherit; font-weight: normal; background: var(--paper);
+  border: 3px solid; border-color: var(--bark-d) var(--fur-l) var(--fur-l) var(--bark-d); padding: 4px; }
+#chatcfg { display: none; flex-direction: column; gap: 4px; font-size: 12px; } #chat.cfg #chatcfg { display: flex; }
+#chatcfg label { display: flex; justify-content: space-between; gap: 6px; align-items: center; } #chatcfg input, #chatcfg select { width: 290px; }
+#chatcfg small { color: var(--bark); font-weight: normal; }
 #perf { position: fixed; right: 8px; bottom: 4px; font-size: 10px; color: var(--fur-l); text-shadow: 1px 1px 0 #000; pointer-events: none; }
 ::-webkit-scrollbar { width: 14px; } ::-webkit-scrollbar-thumb { background: var(--snout); border: 3px solid var(--snout-d); }
 ::-webkit-scrollbar-track { background: var(--fur-d); }
@@ -97,7 +115,7 @@ h2 small { color: var(--moss); }
 <canvas id="bg" width="96" height="54"></canvas>
 <header class="bevel">
   <button id="sidetog" title="hide/show sidebar">◀</button>
-  <div id="logoslot"></div><canvas id="logo" width="28" height="28" title="moo"></canvas>
+  <div id="logoslot"></div><canvas id="logo" width="28" height="28" title="moo (click to talk)"></canvas>
   <div class="brand">
     <h1>NIU-LAI-VIZ</h1>
     <div class="tag">grafana for experiments &middot; weights &amp; biases for the poor &middot; 100% /metrics</div>
@@ -140,6 +158,18 @@ h2 small { color: var(--moss); }
   <label>y max <input id="ymax" type="number" step="any" placeholder="auto"></label>
   <div class="row"><button value="ok">ok</button><button value="auto">auto range</button><button value="cancel" formnovalidate>cancel</button></div>
 </form></dialog>
+<div id="chat" class="bevel">
+  <h2><span>niu lai says</span><span><button id="chatcfgbtn" title="model settings">⚙ model</button><button id="chatnew" title="forget the conversation">new</button><button id="chatx">x</button></span></h2>
+  <div id="chatcfg" class="pit" style="padding:6px">
+    <label>api <select id="llmprov"><option value="openai">openai-compatible (openai, openrouter, vllm…)</option><option value="anthropic">anthropic</option></select></label>
+    <label>base url <input id="llmurl" type="text" placeholder="https://openrouter.ai/api/v1"></label>
+    <label>api key <input id="llmkey" type="password" placeholder="sk-..." autocomplete="off"></label>
+    <label>model <input id="llmmodel" type="text" placeholder="z-ai/glm-5.3-flash"></label>
+    <small>saved in this browser's localStorage and sent straight from the browser to the base url, never to the niu-lai-viz server.</small>
+  </div>
+  <div id="chatlog" class="pit"></div>
+  <form id="chatform"><textarea id="chatin" placeholder="moo? e.g. &quot;compare loss across lr, log scale&quot;  (enter sends, shift+enter newline)"></textarea><button id="chatsend">moo</button></form>
+</div>
 <script>
 "use strict";
 const $ = (s) => document.querySelector(s);
@@ -195,7 +225,7 @@ function animateNiu(c) {
     if (reduce) return drawNiu(c);
     const drift = hidden ? Math.cos(t * 0.13) * 0.5 : 0;  // face the way it is floating
     const yaw = Math.max(-1, Math.min(1, 0.7 * Math.sin(t * 0.55) + 0.25 * Math.sin(t * 1.7) + drift));
-    const nod = Math.round((1 - Math.cos(t * 2.2)) * 0.8), pitch = hidden ? 1.2 : 0.4 + 0.3 * Math.sin(t * 0.4);
+    const nod = Math.round((1 - Math.cos(t * (niuBusy ? 9 : 2.2))) * 0.8), pitch = hidden ? 1.2 : 0.4 + 0.3 * Math.sin(t * 0.4);
     const key = Math.round(yaw * 10) + ":" + nod + ":" + Math.round(pitch * 4);
     if (key !== last) { last = key; drawNiu(c, yaw, nod, pitch); }
   };
@@ -694,7 +724,138 @@ for (const id of ["amode", "akey", "aval", "xmode", "xkey"]) $("#" + id).addEven
 $("#amode").value = S.align.mode; $("#akey").value = S.align.key; $("#aval").value = S.align.above;
 $("#xmode").value = S.xkey ? "metric" : "time"; $("#xkey").value = S.xkey;
 
-window.niu = { charts, S, frameWork, FRAME_BUDGET }; // for benchmarks and console poking
+// ---------- niu lai chat: an LLM that drives the UI through tools ----------
+// Runs entirely in the browser: the key never touches the niu-lai-viz server.
+let niuBusy = false;
+const LLM_DEFAULTS = { openai: { url: "https://openrouter.ai/api/v1", model: "z-ai/glm-5.3-flash" }, anthropic: { url: "https://api.anthropic.com/v1", model: "claude-sonnet-4-5" } };
+S.llm = ls("llm", { provider: "openai", url: LLM_DEFAULTS.openai.url, key: "", model: LLM_DEFAULTS.openai.model });
+const saveLlm = () => localStorage.setItem("niu.llm", JSON.stringify(S.llm));
+const pick = (o, ks) => Object.fromEntries(ks.filter((k) => o[k] != null).map((k) => [k, o[k]]));
+const r4 = (v) => (typeof v === "number" && isFinite(v) ? +v.toPrecision(5) : v);
+function needKeys(keys) { const known = new Set(S.keys); return { ok: keys.filter((k) => known.has(k)), unknown: keys.filter((k) => !known.has(k)) }; }
+function setAlign(mode, key, above) {
+  $("#amode").value = mode; if (key != null) $("#akey").value = key; if (above != null) $("#aval").value = above;
+  $("#akey").dispatchEvent(new Event("input"));
+}
+const TOOLS = [
+  { name: "list_runs", description: "List runs (name, status, labels, picked). Only picked runs are drawn on charts.",
+    parameters: { type: "object", properties: { filter: { type: "string", description: "space-separated tokens; `k=v` matches a label, bare text matches name/labels" } } },
+    run: ({ filter = "" }) => { const toks = filter.trim().split(/\s+/).filter(Boolean);
+      const rs = S.runs.filter((r) => matchesFilter(r, toks));
+      return { total: rs.length, runs: rs.slice(0, 200).map((r) => ({ name: r.name, status: r.status, labels: r.labels, picked: S.picked.has(r.name) })) }; } },
+  { name: "pick_runs", description: "Choose which runs are drawn. mode=set replaces the selection.",
+    parameters: { type: "object", properties: { names: { type: "array", items: { type: "string" } }, mode: { type: "string", enum: ["set", "add", "remove"] } }, required: ["names"] },
+    run: async ({ names, mode = "set" }) => { const ok = names.filter((n) => S.runByName.has(n));
+      if (mode === "set") S.picked = new Set(ok); else for (const n of ok) mode === "add" ? S.picked.add(n) : S.picked.delete(n);
+      save(); filterRuns(); invalidate(true); await refreshKeys(); return { picked: [...S.picked], unknown: names.filter((n) => !S.runByName.has(n)) }; } },
+  { name: "list_metrics", description: "List metric series keys available in the picked runs. Keys look like `endpoint/metric{labels}` or `endpoint/metric [col=val]`. Always use exact keys from here.",
+    parameters: { type: "object", properties: { regex: { type: "string", description: "case-insensitive regex filter" }, limit: { type: "number" } } },
+    run: ({ regex = "", limit = 300 }) => { const re = new RegExp(regex, "i"), ks = S.keys.filter((k) => re.test(k)); return { total: ks.length, keys: ks.slice(0, limit) }; } },
+  { name: "metric_stats", description: "Per run x series summary (n, first/last time and value, min, max, mean) for series matching key_regex. Use it to answer questions about values before charting. Times are seconds since run start, or since the T=0 anchor when aligned=true.",
+    parameters: { type: "object", properties: { key_regex: { type: "string" }, runs: { type: "array", items: { type: "string" }, description: "default: picked runs" }, t0: { type: "number" }, t1: { type: "number" }, aligned: { type: "boolean" } }, required: ["key_regex"] },
+    run: async ({ key_regex, runs, t0, t1, aligned }) => {
+      const a = S.align, align = aligned && a.mode !== "start" && a.key ? { key: a.key, above: a.mode === "above" ? a.above : null } : null;
+      const res = await (await api("/api/stats", { runs: runs || [...S.picked], key: key_regex, t0, t1, align, limit: 300 })).json();
+      res.rows = res.rows.map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, r4(v)]))); return res; } },
+  { name: "list_charts", description: "Charts currently shown, in order, with their y-axis settings.",
+    parameters: { type: "object", properties: {} },
+    run: () => ({ charts: S.panels.map((k) => ({ key: k, wide: S.wide.has(k), ...(S.yopt[k] || {}) })), align: S.align, x_axis: S.xkey || "time", smoothing: S.smooth }) },
+  { name: "add_charts", description: "Add one chart per key (exact keys from list_metrics), optionally setting y scale/range and full width.",
+    parameters: { type: "object", properties: { keys: { type: "array", items: { type: "string" } }, scale: { type: "string", enum: ["lin", "log", "symlog"] }, ymin: { type: "number" }, ymax: { type: "number" }, wide: { type: "boolean" } }, required: ["keys"] },
+    run: ({ keys, scale, ymin, ymax, wide }) => { const { ok, unknown } = needKeys(keys);
+      for (const k of ok) { if (scale || ymin != null || ymax != null) S.yopt[k] = pick({ ...(S.yopt[k] || {}), scale, min: ymin, max: ymax }, ["scale", "min", "max"]); if (wide) S.wide.add(k); }
+      addPanels(ok, true); for (const k of ok) { const c = charts.get(k); if (c && c.data) { c.prep(); c.draw(); } }
+      return { added: ok, unknown, hint: unknown.length ? "use list_metrics to find exact keys" : undefined }; } },
+  { name: "remove_charts", description: "Remove charts. keys=['*'] removes all.",
+    parameters: { type: "object", properties: { keys: { type: "array", items: { type: "string" } } }, required: ["keys"] },
+    run: ({ keys }) => { const ks = keys.includes("*") ? [...S.panels] : keys; ks.forEach(removePanel); return { removed: ks }; } },
+  { name: "set_y_axis", description: "Set a chart's y scale and/or manual range. Pass null min/max for auto.",
+    parameters: { type: "object", properties: { key: { type: "string" }, scale: { type: "string", enum: ["lin", "log", "symlog"] }, min: { type: ["number", "null"] }, max: { type: ["number", "null"] } }, required: ["key"] },
+    run: ({ key, ...o }) => { setYopt(key, { ...(S.yopt[key] || {}), ...o }); return { key, y: S.yopt[key] || "auto" }; } },
+  { name: "set_alignment", description: "T=0 per run. start: run start. first: first sample of a series matching key (regex). above: first value of key > above. Use to line up runs with different startup times.",
+    parameters: { type: "object", properties: { mode: { type: "string", enum: ["start", "first", "above"] }, key: { type: "string" }, above: { type: "number" } }, required: ["mode"] },
+    run: ({ mode, key, above }) => { setAlign(mode, key, above); return { align: { mode, key, above } }; } },
+  { name: "set_x_axis", description: "Plot against a metric (exact key, e.g. a step counter) instead of time. Empty key = time.",
+    parameters: { type: "object", properties: { key: { type: "string" } } },
+    run: ({ key = "" }) => { $("#xmode").value = key ? "metric" : "time"; $("#xkey").value = key; $("#xkey").dispatchEvent(new Event("input")); return { x_axis: key || "time" }; } },
+  { name: "set_smoothing", description: "EMA smoothing factor for all charts, 0 (off) to 0.99.",
+    parameters: { type: "object", properties: { value: { type: "number" } }, required: ["value"] },
+    run: ({ value }) => { const el = $("#smooth"); el.value = Math.max(0, Math.min(0.99, value)); el.dispatchEvent(new Event("input")); return { smoothing: +el.value }; } },
+];
+const TOOL_BY = new Map(TOOLS.map((t) => [t.name, t]));
+function systemPrompt() {
+  return `You are Niu Lai, a low-poly cow who lives in the header of niu-lai-viz, a live experiment viewer (a poor man's Weights & Biases). Metrics are scraped from Prometheus /metrics endpoints into runs; each run has labels (its config, e.g. lr, optimizer).
+You help the user build charts by talking with them, using tools that drive the UI. Rules:
+- Find exact metric keys with list_metrics before add_charts. Never invent keys.
+- Use metric_stats to answer questions about values (best run, final loss, mean utilization) and cite the numbers.
+- Prefer few, useful charts. Suggest log scale for losses spanning orders of magnitude, alignment when runs start at different times, a step metric as x axis when comparing training progress.
+- If the request is ambiguous, ask one short question.
+- Reply briefly in plain text (no markdown tables or headings; short `- ` lines are fine), with the occasional moo.
+State now: ${S.runs.length} runs (${S.picked.size} picked), ${S.keys.length} metric keys in picked runs, ${S.panels.length} charts, T=0 ${S.align.mode}${S.align.key ? " " + S.align.key : ""}, x axis ${S.xkey || "time"}.`;
+}
+let chatHist = [];
+async function llmStep() {
+  const { provider, url, key, model } = S.llm, base = url.replace(/\/+$/, "");
+  if (provider === "anthropic") {
+    const msgs = [];
+    for (const m of chatHist) {
+      if (m.role === "tool") { const blk = { type: "tool_result", tool_use_id: m.tool_call_id, content: m.content }; const last = msgs[msgs.length - 1];
+        if (last && last.role === "user" && Array.isArray(last.content) && last.content[0]?.type === "tool_result") last.content.push(blk); else msgs.push({ role: "user", content: [blk] }); }
+      else if (m.role === "assistant") msgs.push({ role: "assistant", content: [...(m.content ? [{ type: "text", text: m.content }] : []),
+        ...(m.tool_calls || []).map((c) => ({ type: "tool_use", id: c.id, name: c.function.name, input: JSON.parse(c.function.arguments || "{}") }))] });
+      else msgs.push({ role: "user", content: m.content });
+    }
+    const r = await fetch(base + "/messages", { method: "POST", headers: { "content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+      body: JSON.stringify({ model, max_tokens: 4096, system: systemPrompt(), messages: msgs, tools: TOOLS.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters })) }) });
+    const d = await r.json(); if (!r.ok) throw new Error(d.error?.message || r.status);
+    const text = d.content.filter((b) => b.type === "text").map((b) => b.text).join("\n"), uses = d.content.filter((b) => b.type === "tool_use");
+    return { role: "assistant", content: text || null, ...(uses.length ? { tool_calls: uses.map((u) => ({ id: u.id, type: "function", function: { name: u.name, arguments: JSON.stringify(u.input) } })) } : {}) };
+  }
+  const r = await fetch(base + "/chat/completions", { method: "POST", headers: { "content-type": "application/json", ...(key ? { authorization: "Bearer " + key } : {}), "x-title": "niu-lai-viz" },
+    body: JSON.stringify({ model, messages: [{ role: "system", content: systemPrompt() }, ...chatHist], tools: TOOLS.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } })) }) });
+  const d = await r.json(); if (!r.ok || d.error) throw new Error(d.error?.message || r.status);
+  const m = d.choices[0].message; return { role: "assistant", content: m.content || null, ...(m.tool_calls?.length ? { tool_calls: m.tool_calls } : {}) };
+}
+function say(cls, text) {
+  const el = document.createElement("div"); el.className = "msg " + cls;
+  el.innerHTML = esc(text).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+  $("#chatlog").appendChild(el); $("#chatlog").scrollTop = 1e9; return el;
+}
+async function chatSend(text) {
+  if (niuBusy || !text.trim()) return;
+  if (!S.llm.key && S.llm.provider === "anthropic" || !S.llm.url) { $("#chat").classList.add("cfg"); say("err", "set a base url / api key / model first (⚙ model)."); return; }
+  say("user", text); chatHist.push({ role: "user", content: text }); niuBusy = true; $("#chatsend").disabled = true;
+  const thinking = say("tool", "chewing…");
+  try {
+    for (let step = 0; step < 16; step++) {
+      const m = await llmStep(); chatHist.push(m);
+      if (m.content) say("bot", m.content.trim());
+      if (!m.tool_calls) break;
+      for (const c of m.tool_calls) {
+        let out; const t = TOOL_BY.get(c.function.name);
+        try { const args = JSON.parse(c.function.arguments || "{}"); say("tool", `${c.function.name}(${JSON.stringify(args).slice(1, -1).slice(0, 160)})`);
+          out = t ? await t.run(args) : { error: "unknown tool" }; } catch (e) { out = { error: String(e.message || e) }; }
+        chatHist.push({ role: "tool", tool_call_id: c.id, content: JSON.stringify(out).slice(0, 24000) });
+      }
+      $("#chatlog").appendChild(thinking);
+    }
+  } catch (e) { say("err", "llm error: " + (e.message || e)); chatHist.pop(); }
+  finally { thinking.remove(); niuBusy = false; $("#chatsend").disabled = false; $("#chatlog").scrollTop = 1e9; }
+}
+function openChat(open) { document.body.classList.toggle("chat-open", open); if (open) { if (!$("#chatlog").childElementCount) say("bot", "moo. i can find metrics, compare runs and build charts for you. what are we looking at?"); $("#chatin").focus(); } }
+$("#logo").onclick = () => openChat(!document.body.classList.contains("chat-open"));
+$("#chatx").onclick = () => openChat(false);
+$("#chatnew").onclick = () => { chatHist = []; $("#chatlog").innerHTML = ""; openChat(true); };
+$("#chatcfgbtn").onclick = () => $("#chat").classList.toggle("cfg");
+$("#chatform").onsubmit = (e) => { e.preventDefault(); const t = $("#chatin").value; $("#chatin").value = ""; chatSend(t); };
+$("#chatin").onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#chatform").requestSubmit(); } };
+{ const f = { llmprov: "provider", llmurl: "url", llmkey: "key", llmmodel: "model" };
+  for (const [id, k] of Object.entries(f)) { $("#" + id).value = S.llm[k] || ""; $("#" + id).onchange = () => {
+    if (k === "provider") { const d = LLM_DEFAULTS[$("#llmprov").value]; $("#llmurl").value = d.url; $("#llmmodel").value = d.model; }
+    for (const [i2, k2] of Object.entries(f)) S.llm[k2] = $("#" + i2).value.trim(); saveLlm(); }; } }
+if (!S.llm.key) $("#chat").classList.add("cfg");
+
+window.niu = { charts, S, frameWork, FRAME_BUDGET, TOOLS }; // for benchmarks and console poking
 drawBackground(); animateNiu($("#logo")); document.querySelectorAll(".niu").forEach(drawNiu);
 (async () => {
   await refreshRuns();
