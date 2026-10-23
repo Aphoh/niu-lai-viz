@@ -792,7 +792,7 @@ struct HistRun {
 struct HistResp {
     x0: f64,
     x1: f64,
-    /// Windows actually used: at most `slices`, but each spans >= 1.5 scrape intervals.
+    /// Windows actually used: at most `slices`, but each spans >= 3 mean scrape intervals, so scrape jitter does not punch holes.
     slices: usize,
     runs: Vec<HistRun>,
     errors: BTreeMap<String, String>,
@@ -862,7 +862,7 @@ fn hist_blocking(app: &App, req: HistReq) -> HistResp {
         out.x1 = out.x0 + 1.0;
     }
     let n = if gap > 0.0 {
-        let fit = ((out.x1 - out.x0) / (1.5 * gap)).floor().max(1.0) as usize;
+        let fit = ((out.x1 - out.x0) / (3.0 * gap)).floor().max(1.0) as usize;
         req.slices.clamp(1, 4096).min(fit)
     } else {
         req.slices.clamp(1, 4096)
