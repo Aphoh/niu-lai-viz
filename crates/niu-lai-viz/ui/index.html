@@ -308,47 +308,70 @@ class Chart {
       for (const r of meta.runs) { if (r.n) { const c = color(r.name); series.push({ name: r.name, color: c, rgba: rgba(c), xs: new Float32Array(buf, off, r.n), ys: new Float32Array(buf, off + r.n * 4, r.n) }); } off += r.n * 8; }
       const pad = (meta.y1 - meta.y0) * 0.06 || Math.abs(meta.y1) * 0.1 || 1;
       this.data = { x0: meta.x0, x1: meta.x1, y0: meta.y0 - pad, y1: meta.y1 + pad, series, missing: meta.runs.length - series.length };
-      const t2 = performance.now(); this.draw();
-      perf.note(this.key, t1 - t0, performance.now() - t2, buf.byteLength);
+      this.draw();
+      perf.note(t1 - t0, buf.byteLength);
     } catch (e) { if (e.name !== "AbortError") { console.error(e); this.dirty = true; } }
     finally { this.loading = false; }
   }
-  draw() {
-    const g = this.g, d = this.data, W = this.W, H = this.H; if (!d || !W) return;
-    if (!this.img) { if (W - M.l - M.r <= 0 || H - M.t - M.b <= 0) return; this.img = new ImageData(W - M.l - M.r, H - M.t - M.b); this.buf = new Uint32Array(this.img.data.buffer); }
-    // Plot area: grid and lines rasterized into a persistent pixel buffer (no readback).
-    // On an integer grid stepped lines are only horizontal/vertical spans: fill() and a strided loop.
-    const pw = W - M.l - M.r, ph = H - M.t - M.b, buf = this.buf, time = !S.xkey;
-    buf.fill(SKY);
+  draw() { queueDraw(this); }
+  drawNow() {
+    const t0 = performance.now(), d = this.data, W = this.W, H = this.H; if (!d || !W) return;
+    const pw = W - M.l - M.r, ph = H - M.t - M.b; if (pw <= 0 || ph <= 0) return;
+    if (!this.img) { this.img = new ImageData(pw, ph); this.buf = new Uint32Array(this.img.data.buffer); }
+    const time = !S.xkey, g = this.g;
     g.font = "8px monospace";
     const xlab = (v) => time ? fmtT(v) : fmtV(v);
     let xt = ticks(d.x0, d.x1, Math.max(2, pw / 45), time);
     const lw = xt.reduce((m, v) => Math.max(m, g.measureText(xlab(v)).width), 0);
     if (xt.length > 1 && lw + 6 > pw / xt.length) xt = ticks(d.x0, d.x1, Math.max(1, pw / (lw + 10)), time);
     const yt = ticks(d.y0, d.y1, Math.max(2, (H - M.b) / 22), false);
-    const ax = pw / (d.x1 - d.x0), bx = -d.x0 * ax, ay = -ph / (d.y1 - d.y0), by = ph - d.y0 * ay;
+    this.rasterGrid(xt, yt, pw, ph);
+    this.rasterLines(pw, ph);
+    this.blit();
+    this.labels(xt, yt, xlab);
+    if (this.mouse) this.hover();
+    perf.drawn(performance.now() - t0);
+  }
+  // Plot area lives in a persistent pixel buffer (no readback). On an integer grid
+  // stepped lines are only horizontal/vertical spans: fill() and a strided loop.
+  rasterGrid(xt, yt, pw, ph) {
+    const d = this.data, buf = this.buf, ax = pw / (d.x1 - d.x0), bx = -d.x0 * ax, ay = -ph / (d.y1 - d.y0), by = ph - d.y0 * ay;
+    buf.fill(SKY);
     for (const v of xt) { const x = Math.round(v * ax + bx); if (x < 0 || x >= pw) continue; for (let y = 0; y < ph; y += 4) { buf[y * pw + x] = GRID; if (y + 1 < ph) buf[(y + 1) * pw + x] = GRID; } }
     for (const v of yt) { const y = Math.round(v * ay + by); if (y < 0 || y >= ph) continue; const o = y * pw; for (let x = 0; x < pw; x += 4) { buf[o + x] = GRID; if (x + 1 < pw) buf[o + x + 1] = GRID; } }
+  }
+  rasterLines(pw, ph) {
+    const d = this.data, buf = this.buf, ax = pw / (d.x1 - d.x0), bx = -d.x0 * ax + 0.5, ay = -ph / (d.y1 - d.y0), by = ph - d.y0 * ay + 0.5;
+    const W1 = pw - 1, H1 = ph - 1;
     for (const s of d.series) {
       const xs = s.xs, ys = s.ys, n = xs.length, c = s.rgba;
-      let px = Math.round(xs[0] * ax + bx), py = Math.round(ys[0] * ay + by);
-      if (px >= 0 && px < pw && py >= 0 && py < ph) buf[py * pw + px] = c;
+      let px = Math.floor(xs[0] * ax + bx), py = Math.floor(ys[0] * ay + by);
+      if (px >= 0 && px <= W1 && py >= 0 && py <= H1) buf[py * pw + px] = c;
       for (let i = 1; i < n; i++) {
-        const x = Math.round(xs[i] * ax + bx), y = Math.round(ys[i] * ay + by);
-        if (x !== px) { if (py >= 0 && py < ph) { const lo = Math.max(0, Math.min(px, x)), hi = Math.min(pw - 1, Math.max(px, x)); if (lo <= hi) buf.fill(c, py * pw + lo, py * pw + hi + 1); } px = x; }
-        if (y !== py) { if (x >= 0 && x < pw) { const hi = Math.min(ph - 1, Math.max(py, y)); for (let yy = Math.max(0, Math.min(py, y)), o = yy * pw + x; yy <= hi; yy++, o += pw) buf[o] = c; } py = y; }
+        const x = Math.floor(xs[i] * ax + bx), y = Math.floor(ys[i] * ay + by);
+        if (x !== px) {
+          if (py >= 0 && py <= H1) {
+            let lo = px < x ? px : x, hi = px < x ? x : px; if (lo < 0) lo = 0; if (hi > W1) hi = W1;
+            const row = py * pw; if (hi - lo < 16) { for (let k = row + lo, e = row + hi; k <= e; k++) buf[k] = c; } else buf.fill(c, row + lo, row + hi + 1);
+          }
+          px = x;
+        }
+        if (y !== py) {
+          if (x >= 0 && x <= W1) { let lo = py < y ? py : y, hi = py < y ? y : py; if (lo < 0) lo = 0; if (hi > H1) hi = H1; for (let o = lo * pw + x, e = hi * pw + x; o <= e; o += pw) buf[o] = c; }
+          py = y;
+        }
       }
     }
-    g.putImageData(this.img, M.l, M.t);
-    // Margins and labels with the canvas API.
+  }
+  blit() { this.g.putImageData(this.img, M.l, M.t); }
+  labels(xt, yt, xlab) {
+    const g = this.g, d = this.data, W = this.W, H = this.H;
     g.fillStyle = "#f6e7a6"; g.fillRect(0, 0, M.l, H); g.fillRect(0, H - M.b, W, M.b); g.fillRect(W - M.r, 0, M.r, H); g.fillRect(0, 0, W, M.t);
-    g.font = "8px monospace"; g.textBaseline = "middle"; g.fillStyle = PAL.barkD; g.textAlign = "center";
+    g.textBaseline = "middle"; g.fillStyle = PAL.barkD; g.textAlign = "center";
     for (const v of xt) { const x = Math.round(this.xp(v)); if (x >= M.l && x <= W - M.r) g.fillText(xlab(v), x, H - M.b / 2); }
     g.textAlign = "right";
     for (const v of yt) { const y = Math.round(this.yp(v)); if (y >= M.t && y <= H - M.b) g.fillText(fmtV(v), M.l - 2, y); }
-    const lack = d.missing ? ` \u00b7 ${d.missing} w/o data` : "";
-    const info = `${d.series.length} runs${lack}`; if (this.info.textContent !== info) this.info.textContent = info;
-    if (this.mouse) this.hover();
+    const info = `${d.series.length} runs${d.missing ? ` \u00b7 ${d.missing} w/o data` : ""}`; if (this.info.textContent !== info) this.info.textContent = info;
   }
   // Overlay only: crosshair, highlighted nearest run, tooltip. Never touches the data layer.
   hover() {
@@ -392,6 +415,16 @@ class Chart {
 let dragging = null;
 window.addEventListener("mouseup", () => { const c = dragging; dragging = null; c?.endDrag(); });
 
+// Draws run in rAF under a per-frame budget, so no frame does more than ~FRAME_BUDGET ms
+// of chart work however many charts change at once (8.3ms frames on 120Hz displays).
+const FRAME_BUDGET = 4, drawQ = new Set(), frameWork = []; let drawRaf = 0;
+function queueDraw(c) { drawQ.add(c); if (!drawRaf) drawRaf = requestAnimationFrame(flushDraws); }
+function flushDraws() {
+  drawRaf = 0; const t0 = performance.now();
+  for (const c of drawQ) { drawQ.delete(c); if (c.visible && charts.get(c.key) === c) c.drawNow(); if (performance.now() - t0 >= FRAME_BUDGET) break; }
+  if (drawQ.size) drawRaf = requestAnimationFrame(flushDraws);
+  frameWork.push(performance.now() - t0); if (frameWork.length > 600) frameWork.splice(0, 300);
+}
 // One scheduler for every chart: visible + dirty charts load, a few at a time, throttled per chart.
 const SCHED = { running: 0, max: 6, minGap: 900, timer: 0 };
 function pump() {
@@ -408,7 +441,7 @@ function pump() {
 function invalidate(force) { for (const c of charts.values()) { c.dirty = true; if (force) c.last = 0; } pump(); }
 function setView(v) { S.view = v; invalidate(true); }
 // Offscreen charts drop their pixel buffer; it is rebuilt on the next draw.
-const vis = new IntersectionObserver((ents) => { for (const e of ents) { const c = e.target._chart; c.visible = e.isIntersecting; if (!c.visible) c.img = c.buf = null; } pump(); }, { root: $("#panels"), rootMargin: "300px" });
+const vis = new IntersectionObserver((ents) => { for (const e of ents) { const c = e.target._chart; c.visible = e.isIntersecting; if (!c.visible) c.img = c.buf = null; else if (c.data) c.draw(); } pump(); }, { root: $("#panels"), rootMargin: "300px" });
 const ro = new ResizeObserver((ents) => { for (const e of ents) { const c = e.target.parentElement._chart, r = e.contentRect;
   if (c && c.setSize(r.width, r.height)) { c.dirty = true; c.last = 0; c.draw(); } } pump(); });
 $("#panels").addEventListener("scroll", () => { for (const c of charts.values()) c.rect = null; }, { passive: true });
@@ -452,8 +485,10 @@ function connect() {
 }
 
 // ---------- perf HUD ----------
-const perf = { n: 0, net: 0, draw: 0, bytes: 0, note(k, net, draw, b) { this.n++; this.net += net; this.draw += draw; this.bytes += b; this.show(); },
-  show: debounce(() => { const p = perf; $("#perf").textContent = `${p.n} loads \u00b7 avg net ${(p.net / p.n).toFixed(0)}ms \u00b7 avg draw ${(p.draw / p.n).toFixed(1)}ms \u00b7 ${(p.bytes / p.n / 1024).toFixed(0)}KB/chart`; }, 200) };
+const perf = { n: 0, net: 0, bytes: 0, dn: 0, dsum: 0, dmax: 0,
+  note(net, b) { this.n++; this.net += net; this.bytes += b; this.show(); },
+  drawn(ms) { this.dn++; this.dsum += ms; this.dmax = Math.max(this.dmax, ms); this.show(); },
+  show: debounce(() => { const p = perf; $("#perf").textContent = `${p.n} loads \u00b7 avg net ${(p.net / Math.max(1, p.n)).toFixed(0)}ms \u00b7 ${(p.bytes / Math.max(1, p.n) / 1024).toFixed(0)}KB/chart \u00b7 draw avg ${(p.dsum / Math.max(1, p.dn)).toFixed(2)}ms max ${p.dmax.toFixed(1)}ms`; }, 250) };
 
 // ---------- wiring ----------
 $("#runfilter").oninput = debounce(filterRuns, 60);
@@ -471,6 +506,7 @@ for (const id of ["amode", "akey", "aval", "xmode", "xkey"]) $("#" + id).addEven
 $("#amode").value = S.align.mode; $("#akey").value = S.align.key; $("#aval").value = S.align.above;
 $("#xmode").value = S.xkey ? "metric" : "time"; $("#xkey").value = S.xkey;
 
+window.niu = { charts, S, frameWork, FRAME_BUDGET }; // for benchmarks and console poking
 drawBackground(); drawNiu($("#logo")); document.querySelectorAll(".niu").forEach(drawNiu);
 (async () => {
   await refreshRuns();
