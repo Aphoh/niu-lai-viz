@@ -6,6 +6,12 @@ grafana for experiments · weights & biases for the poor · 100% /metrics
 
 Scrapes Prometheus `/metrics` endpoints into Parquet runs and serves a live UI to compare them.
 
+
+
+https://github.com/user-attachments/assets/162efd4e-8f4f-49e2-92f7-8108bd38138a
+
+
+
 ## Demo
 
 Needs Rust ([rustup](https://rustup.rs)) and Python 3.
