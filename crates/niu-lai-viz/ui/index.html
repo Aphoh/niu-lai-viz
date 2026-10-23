@@ -22,7 +22,11 @@ button, input, select { font: inherit; color: var(--ink); background: var(--snou
   border: 3px solid; border-color: #ffd3e2 var(--snout-d) var(--snout-d) #ffd3e2; border-radius: 0; }
 button:active { border-color: var(--snout-d) #ffd3e2 #ffd3e2 var(--snout-d); }
 input[type=text], input[type=number] { background: var(--paper); cursor: text; border-color: var(--bark-d) var(--fur-l) var(--fur-l) var(--bark-d); }
-header { display: flex; align-items: center; gap: 14px; padding: 6px 12px; margin: 8px; flex-wrap: wrap; }
+header { display: flex; align-items: center; gap: 14px; padding: 6px 12px; margin: 8px; flex-wrap: wrap; transition: margin-top .3s steps(6); }
+body.hdr-hidden header { margin-top: calc(-1 * var(--hdr-h, 120px)); }
+body.noside aside { display: none; }
+#sidetog { font-size: 16px; padding: 0 6px; align-self: stretch; }
+.panel.wide { grid-column: 1 / -1; height: 440px; }
 #logo { width: 84px; height: 84px; }
 .brand { display: flex; flex-direction: column; gap: 14px; padding-right: 14px; }
 h1 { margin: 0; font: 900 40px/1 Impact, "Arial Black", sans-serif; letter-spacing: 2px; color: var(--snout);
@@ -85,6 +89,7 @@ h2 small { color: var(--moss); }
 <body>
 <canvas id="bg" width="96" height="54"></canvas>
 <header class="bevel">
+  <button id="sidetog" title="hide/show sidebar">◀</button>
   <canvas id="logo" width="28" height="28"></canvas>
   <div class="brand">
     <h1>NIU-LAI-VIZ</h1>
@@ -145,16 +150,35 @@ function drawBackground() {
   g.putImageData(img, 0, 0);
   for (let i = 0; i < 40; i++) { g.fillStyle = r() < .6 ? PAL.fur : PAL.snout; g.fillRect(Math.floor(r() * W), 20 + Math.floor(r() * (H - 20)), 1, 1); }
 }
-function drawNiu(c) {
-  const g = c.getContext("2d"), P = (col, ...p) => { g.fillStyle = col; g.beginPath(); g.moveTo(p[0], p[1]); for (let i = 2; i < p.length; i += 2) g.lineTo(p[i], p[i + 1]); g.fill(); };
-  P(PAL.furD, 3, 7, 0, 2, 7, 4); P(PAL.furD, 25, 7, 28, 2, 21, 4);
-  P(PAL.fur, 4, 6, 14, 2, 24, 6, 26, 15, 22, 23, 14, 26, 6, 23, 2, 15);
-  P(PAL.furL, 14, 2, 24, 6, 18, 11); P(PAL.furL, 4, 6, 14, 2, 9, 10);
-  P(PAL.furD, 2, 15, 6, 23, 8, 16); P(PAL.furD, 26, 15, 22, 23, 20, 16);
-  P(PAL.ink, 8, 11, 11, 10, 11, 13, 8, 13); P(PAL.ink, 17, 10, 20, 11, 20, 13, 17, 13);
-  g.fillStyle = "#fff"; g.fillRect(9, 11, 1, 1); g.fillRect(18, 11, 1, 1);
-  P(PAL.snout, 7, 17, 14, 14, 21, 17, 19, 23, 14, 24, 9, 23); P(PAL.snoutD, 7, 17, 9, 23, 11, 19);
-  g.fillStyle = PAL.snoutD; g.fillRect(11, 18, 2, 2); g.fillRect(16, 18, 2, 2);
+// Crude low-poly Niu Lai head on a 28x28 grid. yaw 0..1 turns it toward the charts
+// (right/down); nod shifts it down in whole pixels. Nearer facets move further: fake 3D.
+function drawNiu(c, yaw = 0, nod = 0) {
+  const g = c.getContext("2d");
+  const P = (depth, col, ...p) => { g.fillStyle = col; g.beginPath();
+    const dx = yaw * depth, dy = yaw * depth * 0.35 + nod * Math.min(1, depth / 2);
+    for (let i = 0; i < p.length; i += 2) (i ? g.lineTo : g.moveTo).call(g, Math.round(p[i] + dx), Math.round(p[i + 1] + dy)); g.fill(); };
+  g.clearRect(0, 0, 28, 28);
+  P(0.5, PAL.furD, 3, 7, 0, 2, 7, 4); P(0.5, PAL.furD, 25, 7, 28, 2, 21, 4);
+  P(1, PAL.fur, 4, 6, 14, 2, 24, 6, 26, 15, 22, 23, 14, 26, 6, 23, 2, 15);
+  P(1.5, PAL.furL, 14, 2, 24, 6, 18, 11); P(1.5, PAL.furL, 4, 6, 14, 2, 9, 10);
+  P(1, PAL.furD, 2, 15, 6, 23, 8, 16); P(1.2, PAL.furD, 26, 15, 22, 23, 20, 16);
+  P(2.5, PAL.ink, 8, 11, 11, 10, 11, 13, 8, 13); P(2.5, PAL.ink, 17, 10, 20, 11, 20, 13, 17, 13);
+  P(3.5, "#fff", 9, 11, 10, 11, 10, 12, 9, 12); P(3.5, "#fff", 18, 11, 19, 11, 19, 12, 18, 12);
+  P(3, PAL.snout, 7, 17, 14, 14, 21, 17, 19, 23, 14, 24, 9, 23); P(3, PAL.snoutD, 7, 17, 9, 23, 11, 19);
+  P(3, PAL.snoutD, 11, 18, 13, 18, 13, 20, 11, 20); P(3, PAL.snoutD, 16, 18, 18, 18, 18, 20, 16, 20);
+}
+// Turn to look at the charts, nod slowly, glance back, repeat. 8 fps on a 28px canvas.
+function animateNiu(c) {
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return drawNiu(c);
+  const t0 = performance.now(); let last = "";
+  setInterval(() => {
+    if (document.hidden) return;
+    const t = ((performance.now() - t0) / 1000) % 14;
+    let yaw = t < 1.2 ? t / 1.2 : t < 11 ? 1 : t < 12 ? 1 - (t - 11) : 0; yaw = yaw * yaw * (3 - 2 * yaw);
+    const nod = t >= 1.2 && t < 11 ? Math.round((1 - Math.cos((t - 1.2) * Math.PI * 2 / 2.8)) * 1.1) : 0;
+    const key = Math.round(yaw * 8) + ":" + nod; if (key === last) return; last = key;
+    drawNiu(c, yaw, nod);
+  }, 125);
 }
 
 // ---------- state ----------
@@ -162,9 +186,9 @@ const ls = (k, d) => { try { return JSON.parse(localStorage.getItem("niu." + k))
 const S = {
   runs: [], runByName: new Map(), shownRuns: [], picked: new Set(ls("picked", [])), firstLoad: localStorage.getItem("niu.picked") === null,
   keys: [], shownKeys: [], panels: ls("panels", []), smooth: 0, view: null,
-  align: ls("align", { mode: "start", key: "", above: 0 }), xkey: ls("xkey", ""),
+  align: ls("align", { mode: "start", key: "", above: 0 }), xkey: ls("xkey", ""), wide: new Set(ls("wide", [])),
 };
-const save = () => { for (const k of ["picked", "panels", "align", "xkey"]) localStorage.setItem("niu." + k, JSON.stringify(k === "picked" ? [...S.picked] : S[k])); };
+const save = () => { for (const k of ["picked", "panels", "align", "xkey", "wide"]) localStorage.setItem("niu." + k, JSON.stringify(k === "picked" || k === "wide" ? [...S[k]] : S[k])); };
 // Garish run colors, handed out oldest-first so a run keeps its color as new runs appear.
 const RUN_COLORS = ["#ff00ff", "#0047ff", "#ff6a00", "#7a00ff", "#d40000", "#008a3e", "#e6d000", "#8b4513", "#00c9b0", "#ff3d8b", "#5a7d00", "#00a2ff"];
 const colorCache = new Map();
@@ -477,7 +501,19 @@ function setView(v) { S.view = v; invalidate(true); }
 const vis = new IntersectionObserver((ents) => { for (const e of ents) { const c = e.target._chart; c.visible = e.isIntersecting; if (!c.visible) c.img = c.buf = null; else if (c.data) c.draw(); } pump(); }, { root: $("#panels"), rootMargin: "300px" });
 const ro = new ResizeObserver((ents) => { for (const e of ents) { const c = e.target.parentElement._chart, r = e.contentRect;
   if (c && c.setSize(r.width, r.height)) { c.dirty = true; c.last = 0; c.draw(); } } pump(); });
-$("#panels").addEventListener("scroll", () => { for (const c of charts.values()) c.rect = null; }, { passive: true });
+// Header slides away while scrolling down, back on scroll up or near the top.
+const hdr = $("header"); let lastTop = 0;
+new ResizeObserver(() => document.body.style.setProperty("--hdr-h", hdr.offsetHeight + 8 + "px")).observe(hdr);
+hdr.addEventListener("transitionend", () => { for (const c of charts.values()) c.rect = null; });
+$("#panels").addEventListener("scroll", (e) => {
+  for (const c of charts.values()) c.rect = null;
+  const t = e.target.scrollTop;
+  if (t > lastTop + 4 && t > 60) document.body.classList.add("hdr-hidden"); else if (t < lastTop - 4 || t < 20) document.body.classList.remove("hdr-hidden");
+  lastTop = t;
+}, { passive: true });
+function setSide(hidden) { document.body.classList.toggle("noside", hidden); $("#sidetog").textContent = hidden ? "▶" : "◀"; localStorage.setItem("niu.noside", JSON.stringify(hidden)); }
+$("#sidetog").onclick = () => setSide(!document.body.classList.contains("noside"));
+setSide(ls("noside", false));
 
 S.panelSet = new Set(S.panels);
 function addPanels(keys) {
@@ -486,9 +522,11 @@ function addPanels(keys) {
   for (const key of keys) {
     S.panels.push(key); S.panelSet.add(key);
     const p = document.createElement("div"); p.className = "panel bevel";
-    p.innerHTML = `<div class="ptitle"><span></span><em></em><button>x</button></div><div class="plot"><div class="tip"></div></div>`;
+    p.innerHTML = `<div class="ptitle"><span></span><em></em><button class="wbtn" title="full width">⇔</button><button class="xbtn">x</button></div><div class="plot"><div class="tip"></div></div>`;
+    if (S.wide.has(key)) p.classList.add("wide");
+    p.querySelector(".wbtn").onclick = () => { const on = p.classList.toggle("wide"); on ? S.wide.add(key) : S.wide.delete(key); save(); };
     p.querySelector("span").textContent = key; p.querySelector("span").title = key;
-    p.querySelector("button").onclick = () => removePanel(key);
+    p.querySelector(".xbtn").onclick = () => removePanel(key);
     frag.appendChild(p);
     const c = new Chart(key, p); p._chart = c; charts.set(key, c);
   }
@@ -497,6 +535,7 @@ function addPanels(keys) {
   $("#empty").style.display = S.panels.length ? "none" : ""; save(); keyList.schedule(true); pump();
 }
 function removePanel(key) {
+  S.wide.delete(key);
   const c = charts.get(key); if (!c) return; c.destroy(); vis.unobserve(c.panel); ro.unobserve(c.plot); c.panel.remove(); charts.delete(key);
   S.panels = S.panels.filter((k) => k !== key); S.panelSet.delete(key); $("#empty").style.display = S.panels.length ? "none" : ""; save(); keyList.schedule(true);
 }
@@ -540,7 +579,7 @@ $("#amode").value = S.align.mode; $("#akey").value = S.align.key; $("#aval").val
 $("#xmode").value = S.xkey ? "metric" : "time"; $("#xkey").value = S.xkey;
 
 window.niu = { charts, S, frameWork, FRAME_BUDGET }; // for benchmarks and console poking
-drawBackground(); drawNiu($("#logo")); document.querySelectorAll(".niu").forEach(drawNiu);
+drawBackground(); animateNiu($("#logo")); document.querySelectorAll(".niu").forEach(drawNiu);
 (async () => {
   await refreshRuns();
   await refreshKeys();
