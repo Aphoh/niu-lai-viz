@@ -314,7 +314,8 @@ function yticks(d, n) {
   const out = [], f = YFWD[d.scale];
   if (d.scale === "log") {
     const a = Math.floor(d.y0), b = Math.ceil(d.y1), dec = b - a, step = Math.max(1, Math.ceil(dec / n));
-    for (let k = a; k <= b; k += step) for (const m of dec * 3 <= n ? [1, 2, 5] : [1]) { const v = m * 10 ** k, t = f(v); if (t >= d.y0 && t <= d.y1) out.push({ t, v }); }
+    const span = d.y1 - d.y0, mults = span * 3 <= n ? [1, 2, 5] : span * 2 <= n ? [1, 3] : [1];
+    for (let k = a; k <= b; k += step) for (const m of mults) { const v = m * 10 ** k, t = f(v); if (t >= d.y0 && t <= d.y1) out.push({ t, v }); }
   } else {
     const top = Math.ceil(Math.max(Math.abs(d.y0), Math.abs(d.y1))), step = Math.max(1, Math.ceil((d.y1 - d.y0) / n));
     for (let k = 0; k <= top; k += step) for (const sg of k ? [-1, 1] : [1]) { const v = k ? sg * 10 ** (k - 1) : 0, t = f(v); if (t >= d.y0 && t <= d.y1) out.push({ t, v }); }
