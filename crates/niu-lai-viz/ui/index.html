@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en">
-<head>
+<head><link rel="icon" href="data:,">
 <meta charset="utf-8">
 <title>NIU-LAI-VIZ</title>
 <style>
@@ -115,6 +115,10 @@ body.chat-open #chat { display: flex; }
 .msg.bot blockquote { border-left: 4px solid var(--snout); padding-left: 6px; }
 .msg.bot a { color: var(--grass); }
 .ptitle span.fx::before { content: "ƒ "; color: var(--snout); }
+.ptitle span.hist::before, .key.hist::before { content: "▦ "; color: var(--snout); }
+.hruns { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; max-height: 44px; overflow-y: auto; }
+.hruns button { font-size: 10px; padding: 0 4px; opacity: .55; } .hruns button.on { opacity: 1; background: var(--snout); }
+.hruns i { display: inline-block; width: 8px; height: 8px; border: 1px solid #000; margin-right: 3px; }
 #fexpr { width: 100%; min-height: 64px; font: inherit; }
 #fdlg { max-width: 560px; }
 #fdlg pre { white-space: pre-wrap; font-size: 11px; margin: 4px 0; }
@@ -265,10 +269,10 @@ function animateNiu(c) {
 const ls = (k, d) => { try { return JSON.parse(localStorage.getItem("niu." + k)) ?? d; } catch { return d; } };
 const S = {
   runs: [], runByName: new Map(), shownRuns: [], picked: new Set(ls("picked", [])), firstLoad: localStorage.getItem("niu.picked") === null,
-  keys: [], shownKeys: [], panels: ls("panels", []), smooth: 0, view: null,
+  keys: [], hists: [], shownKeys: [], hsel: ls("hsel", {}), panels: ls("panels", []), smooth: 0, view: null,
   align: ls("align", { mode: "start", key: "", above: 0 }), xkey: ls("xkey", ""), wide: new Set(ls("wide", [])), yopt: ls("yopt", {}), titles: ls("titles", {}),
 };
-const save = () => { for (const k of ["picked", "panels", "align", "xkey", "wide", "yopt", "titles"]) localStorage.setItem("niu." + k, JSON.stringify(k === "picked" || k === "wide" ? [...S[k]] : S[k])); };
+const save = () => { for (const k of ["picked", "panels", "align", "xkey", "wide", "yopt", "titles", "hsel"]) localStorage.setItem("niu." + k, JSON.stringify(k === "picked" || k === "wide" ? [...S[k]] : S[k])); };
 // Garish run colors, handed out oldest-first so a run keeps its color as new runs appear.
 const RUN_COLORS = ["#ff00ff", "#0047ff", "#ff6a00", "#7a00ff", "#d40000", "#008a3e", "#e6d000", "#8b4513", "#00c9b0", "#ff3d8b", "#5a7d00", "#00a2ff"];
 const colorCache = new Map();
@@ -324,7 +328,7 @@ const runList = new VList($("#runs"), 34, (d, run) => {
     d.innerHTML = `<div class="top"><div class="swatch" style="background:${color(run.name)}"></div><div class="nm">${esc(run.name)}</div><div class="status ${run.status}">${st}</div></div><div class="labels">${esc(run._lab)}</div>`;
   }
 });
-const keyList = new VList($("#keys"), 22, (d, key) => { d.className = "vrow key" + (S.panelSet.has(key) ? " on" : ""); if (d.textContent !== key) { d.textContent = key; d.title = key; } d.dataset.key = key; });
+const keyList = new VList($("#keys"), 22, (d, key) => { const h = isHist(key), t = h ? key.slice(1) : key; d.className = "vrow key" + (h ? " hist" : "") + (S.panelSet.has(key) ? " on" : ""); if (d.textContent !== t) { d.textContent = t; d.title = h ? t + " (histogram: per-run heatmap)" : t; } d.dataset.key = key; });
 $("#runs").addEventListener("click", (e) => { const r = e.target.closest(".run"); if (r) togglePick(r.dataset.name); });
 $("#keys").addEventListener("click", (e) => { const r = e.target.closest(".key"); if (r) { const k = r.dataset.key; S.panelSet.has(k) ? removePanel(k) : addPanels([k], true); } });
 
@@ -336,9 +340,10 @@ function filterRuns() {
 }
 function filterKeys() {
   let re; try { re = new RegExp($("#keyfilter").value, "i"); } catch { re = null; }
-  S.shownKeys = !re ? [] : $("#keyfilter").value ? S.keys.filter((k) => re.test(k)) : S.keys;
+  const all = S.hists.length ? [...S.hists.map((h) => "#" + h), ...S.keys] : S.keys;
+  S.shownKeys = !re ? [] : $("#keyfilter").value ? all.filter((k) => re.test(isHist(k) ? k.slice(1) : k)) : all;
   keyList.set(S.shownKeys);
-  $("#keycount").textContent = `${S.shownKeys.length}/${S.keys.length}`;
+  $("#keycount").textContent = `${S.shownKeys.length}/${all.length}`;
 }
 
 // ---------- server sync ----------
@@ -357,7 +362,7 @@ async function refreshRuns() {
 let keysCtl;
 async function refreshKeys() {
   keysCtl?.abort(); keysCtl = new AbortController();
-  try { const res = await (await api("/api/keys", { runs: [...S.picked] }, keysCtl.signal)).json(); S.keys = res.keys; filterKeys(); } catch (e) { if (e.name !== "AbortError") throw e; }
+  try { const res = await (await api("/api/keys", { runs: [...S.picked] }, keysCtl.signal)).json(); S.keys = res.keys; S.hists = res.hists || []; filterKeys(); } catch (e) { if (e.name !== "AbortError") throw e; }
 }
 const refreshKeysSoon = debounce(refreshKeys, 250);
 
@@ -587,6 +592,115 @@ class Chart {
     for (let i = 1; i < xs.length; i++) { const x = this.xp(xs[i]), y = this.yp(ys[i]); o.lineTo(x, py); o.lineTo(x, y); py = y; } }
   destroy() { this.ctl?.abort(); cancelAnimationFrame(this.hoverRaf); this.data = null; if (dragging === this) dragging = null; }
 }
+// ---------- histograms: one heatmap per shown run (time x bucket, colour = observations) ----------
+// Panel key "#" + base from /api/keys `hists`; the server differences the cumulative buckets (src/hist.rs).
+const PAPER32 = rgba("#f6e7a6");
+const HCOL = (() => { const stops = ["#8fd0e8", "#5c9a2c", "#e8b923", "#f49ab8", "#ff00ff"], lut = new Uint32Array(256), h = (c) => [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16));
+  for (let i = 0; i < 256; i++) { const t = i / 255 * (stops.length - 1), k = Math.min(stops.length - 2, Math.floor(t)), a = h(stops[k]), b = h(stops[k + 1]), f = t - k;
+    lut[i] = rgba(`rgb(${a.map((v, j) => Math.round(v + (b[j] - v) * f)).join(",")})`); } return lut; })();
+// Quantile as {j: bucket, f: fraction into it}, like PromQL histogram_quantile (linear within a bucket).
+function hq(c, q) { let tot = 0; for (const v of c) tot += v; if (!(tot > 0)) return null; const r = q * tot; let acc = 0;
+  for (let j = 0; j < c.length; j++) { if (c[j] > 0 && acc + c[j] >= r) return { j, f: (r - acc) / c[j] }; acc += c[j]; } return null; }
+function hqVal(le, h) { if (!h) return NaN; const hi = le[h.j], lo = h.j ? le[h.j - 1] : 0; return hi === Infinity ? lo : lo + (hi - lo) * h.f; }
+// Quantile overlays: [q, colour, dash]. White p99 stays visible on every heatmap colour.
+const HQ = [[.5, "#24140a", []], [.9, "#24140a", [3, 2]], [.99, "#ffffff", []]];
+// Bucket bounds at 3 significant digits; small ones in SI (0.0005 -> 500µ) so labels stay short.
+const fmtLe = (v) => { if (v === Infinity) return "+Inf"; const a = Math.abs(v);
+  if (a > 0 && a < 0.01) for (const [d, u] of [[1e-3, "m"], [1e-6, "µ"], [1e-9, "n"]]) if (a >= d) return +(v / d).toPrecision(3) + u;
+  return fmtV(+v.toPrecision(3)); };
+class HistChart extends Chart {
+  constructor(key, panel) { super(key, panel); this.chips = panel.querySelector(".hruns");
+    this.chips.addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) this.toggleRun(b.dataset.n); }); }
+  shown() { const sel = (S.hsel[this.key] || []).filter((n) => S.picked.has(n)); return sel.length ? sel : [...S.picked].slice(0, 2); }
+  toggleRun(n) { let sel = this.shown(); sel = sel.includes(n) ? sel.filter((x) => x !== n) : [...sel, n].slice(-3);
+    S.hsel[this.key] = sel; save(); this.renderChips(); this.dirty = true; this.last = 0; pump(); }
+  renderChips() { const sh = new Set(this.shown()), names = [...S.picked], sig = names.join("\0") + "|" + [...sh].join("\0"); if (sig === this.chipSig) return; this.chipSig = sig;
+    this.chips.innerHTML = names.slice(0, 80).map((n) => `<button data-n="${esc(n)}" class="${sh.has(n) ? "on" : ""}" title="show/hide this run (up to 3)"><i style="background:${color(n)}"></i>${esc(n)}</button>`).join(""); }
+  async load() {
+    this.loading = true; this.dirty = false; this.last = performance.now(); this.renderChips();
+    this.ctl?.abort(); this.ctl = new AbortController();
+    const pw = this.W - M.l - M.r, body = { runs: this.shown(), key: this.key.slice(1), slices: Math.max(10, Math.min(600, Math.floor(pw / 2))) };
+    if (S.view) { body.x0 = S.view.x0; body.x1 = S.view.x1; }
+    if (S.align.mode !== "start" && S.align.key) body.align = { key: S.align.key, above: S.align.mode === "above" ? +S.align.above : null };
+    try {
+      const t0 = performance.now(), res = await (await api("/api/hist", body, this.ctl.signal)).json(); perf.note(performance.now() - t0, 0);
+      const le = [...new Set(res.runs.flatMap((r) => r.le.map((v) => v ?? Infinity)))].sort((a, b) => a - b);
+      const runs = body.runs.map((n) => res.runs.find((r) => r.name === n)).filter(Boolean).map((r) => {
+        const map = r.le.map((v) => le.indexOf(v ?? Infinity));
+        const counts = r.counts.map((c) => { if (!c) return null; const o = new Float32Array(le.length); c.forEach((v, j) => o[map[j]] += v); return o; });
+        return { name: r.name, color: color(r.name), counts, q: HQ.map(([q]) => counts.map((c) => c && hq(c, q))) }; });
+      this.data = { x0: res.x0, x1: res.x1, le, n: body.slices, dt: (res.x1 - res.x0) / body.slices, runs, series: [], missing: body.runs.length - runs.length };
+      this.prep(); this.draw();
+    } catch (e) { if (e.name !== "AbortError") { console.error(e); this.dirty = true; } }
+    finally { this.loading = false; }
+  }
+  // Colour scale (log) shared by every shown run so heatmaps compare directly.
+  prep() {
+    const d = this.data; if (!d) return; d.share = S.yopt[this.key]?.scale === "share"; this.sbtn.textContent = d.share ? "share" : "rate";
+    let lo = Infinity, hi = -Infinity;
+    for (const r of d.runs) for (const c of r.counts) { if (!c) continue; let tot = 0; for (const v of c) tot += v;
+      for (const v0 of c) { const v = d.share ? v0 / (tot || 1) : v0 / d.dt; if (v > 0) { if (v < lo) lo = v; if (v > hi) hi = v; } } }
+    d.lmin = Math.log(lo === Infinity ? 1 : lo); d.lmax = Math.log(hi === -Infinity ? 2 : hi);
+  }
+  drawNow() {
+    const t0 = performance.now(), d = this.data, W = this.W, H = this.H; if (!d || !W) return;
+    const pw = W - M.l - M.r, ph = H - M.t - M.b; if (pw <= 0 || ph <= 0) return;
+    if (!this.img) { this.img = new ImageData(pw, ph); this.buf = new Uint32Array(this.img.data.buffer); }
+    const buf = this.buf, g = this.g, nr = Math.max(1, d.runs.length), gap = 4, rh = Math.max(4, Math.floor((ph - gap * (nr - 1)) / nr)), nb = d.le.length, span = d.lmax - d.lmin || 1;
+    this.rh = rh; this.rows = d.runs.map((_, i) => i * (rh + gap)); buf.fill(PAPER32);
+    d.runs.forEach((r, ri) => { const top = this.rows[ri];
+      for (let k = 0; k < d.n; k++) { const c = r.counts[k], x0 = Math.floor(k * pw / d.n), x1 = Math.max(x0 + 1, Math.floor((k + 1) * pw / d.n)); if (!c) continue;
+        let tot = 0; for (const v of c) tot += v;
+        for (let j = 0; j < nb; j++) { const v = d.share ? (tot ? c[j] / tot : 0) : c[j] / d.dt;
+          const col = v > 0 ? HCOL[Math.max(40, Math.min(255, Math.round(40 + 215 * (Math.log(v) - d.lmin) / span)))] : SKY;
+          const y0 = top + rh - Math.floor((j + 1) * rh / nb), y1 = top + rh - Math.floor(j * rh / nb);
+          for (let y = y0; y < y1; y++) buf.fill(col, y * pw + x0, y * pw + x1); } } });
+    this.blit();
+    // p50 / p90 / p99 through slice centres in bucket-row space, labelled at their right end.
+    g.lineWidth = 1; g.font = "bold 8px monospace"; g.textBaseline = "middle"; g.textAlign = "left";
+    d.runs.forEach((r, ri) => { const top = M.t + this.rows[ri], tags = [];
+      HQ.forEach(([q, col, dash], qi) => { const qs = r.q[qi]; g.strokeStyle = col; g.setLineDash(dash); g.beginPath(); let on = false, end = null;
+        for (let k = 0; k < d.n; k++) { const h = qs[k]; if (!h) { on = false; continue; } const x = M.l + (k + .5) * pw / d.n, y = top + rh - (h.j + h.f) * rh / nb;
+          on ? g.lineTo(x, y) : g.moveTo(x, y); on = true; end = [x, y]; } g.stroke(); g.setLineDash([]);
+        if (end && end[0] > M.l + 70) tags.push({ t: "p" + q * 100, col, x: end[0], y: end[1] }); });
+      tags.sort((a, b) => b.y - a.y); let floor = Infinity;
+      for (const t of tags) { const w = g.measureText(t.t).width + 4, y = Math.max(top + 5, Math.min(t.y, floor - 9, top + rh - 5)); floor = y;
+        const x = Math.min(t.x + 2, M.l + pw - w); g.fillStyle = "rgba(36,20,10,.8)"; g.fillRect(x, y - 4, w, 9); g.fillStyle = t.col === "#24140a" ? "#fff08a" : t.col; g.fillText(t.t, x + 2, y + .5); } });
+    g.fillStyle = "#f6e7a6"; g.fillRect(0, 0, M.l, H); g.fillRect(0, H - M.b, W, M.b); g.fillRect(W - M.r, 0, M.r, H); g.fillRect(0, 0, W, M.t);
+    g.font = "8px monospace"; g.textBaseline = "middle"; g.fillStyle = PAL.barkD; g.textAlign = "center";
+    const xt = ticks(d.x0, d.x1, Math.max(2, pw / 45), true); for (const v of xt) { const x = Math.round(this.xp(v)); if (x >= M.l && x <= W - M.r) g.fillText(fmtT(v), x, H - M.b / 2); }
+    g.textAlign = "right"; const stride = Math.max(1, Math.ceil(9 / (rh / nb)));
+    d.runs.forEach((r, ri) => { const top = M.t + this.rows[ri];
+      for (let j = nb - 2; j >= 0; j -= stride) g.fillText(fmtLe(d.le[j]), M.l - 2, Math.round(top + rh - (j + 1) * rh / nb));
+      g.font = "bold 8px monospace"; const w = g.measureText(r.name).width; g.fillStyle = "rgba(246,231,166,.85)"; g.fillRect(M.l + 1, top + 1, w + 14, 10);
+      g.fillStyle = r.color; g.fillRect(M.l + 3, top + 3, 6, 6); g.fillStyle = PAL.ink; g.textAlign = "left"; g.fillText(r.name, M.l + 12, top + 6); g.textAlign = "right"; g.font = "8px monospace"; g.fillStyle = PAL.barkD; });
+    const info = `${d.runs.length}/${S.picked.size} runs · p50 · p90 dashed · p99 white${d.missing ? ` · ${d.missing} w/o data` : ""}`; if (this.info.textContent !== info) this.info.textContent = info;
+    if (this.mouse || this.frozen) this.hover();
+    perf.drawn(performance.now() - t0);
+  }
+  hover() {
+    if (this.hoverRaf) return;
+    this.hoverRaf = requestAnimationFrame(() => {
+      this.hoverRaf = 0; const o = this.o, d = this.data, F = this.frozen; o.clearRect(0, 0, this.W, this.H);
+      if (this.drag) { o.fillStyle = "rgba(244,154,184,.45)"; o.fillRect(Math.min(this.drag.x0, this.drag.x1), M.t, Math.abs(this.drag.x1 - this.drag.x0), this.H - M.t - M.b); }
+      const mx = F ? F.mx : this.mouse?.x, pw = this.W - M.l - M.r, k = d && mx != null ? Math.floor((mx - M.l) / pw * d.n) : -1;
+      if (!d || !this.rows || k < 0 || k >= d.n) { if (this.tipOn) { this.tip.style.display = "none"; this.tipOn = false; } return; }
+      const nb = d.le.length, rh = this.rh; o.fillStyle = F ? "#ff00ff" : PAL.barkD; o.fillRect(Math.round(mx), M.t, F ? 2 : 1, this.H - M.t - M.b);
+      const my = this.mouse ? this.mouse.y - M.t : -1; let ri = -1, jb = -1;
+      this.rows.forEach((top, i) => { if (my >= top && my < top + rh) { ri = i; jb = Math.min(nb - 1, Math.floor((top + rh - my) / rh * nb)); } });
+      if (ri >= 0) { const top = M.t + this.rows[ri], x0 = M.l + Math.floor(k * pw / d.n), x1 = M.l + Math.floor((k + 1) * pw / d.n);
+        o.strokeStyle = "#24140a"; o.lineWidth = 1; o.strokeRect(x0 - .5, top + rh - Math.floor((jb + 1) * rh / nb) - .5, Math.max(2, x1 - x0) + 1, Math.floor((jb + 1) * rh / nb) - Math.floor(jb * rh / nb) + 1); }
+      let html = `<b>${fmtT(d.x0 + (k + .5) * d.dt)}</b> <small>(${fmtT(d.dt)} slice)</small>`;
+      d.runs.forEach((r, i) => { const c = r.counts[k]; let tot = 0; if (c) for (const v of c) tot += v;
+        const qv = (q) => fmtLe(hqVal(d.le, c && hq(c, q)));
+        html += `<div${i === ri ? ' class="hl"' : ""}><i style="background:${r.color}"></i>${esc(r.name)}: ${c && tot ? `p50 ${qv(.5)} · p90 ${qv(.9)} · p99 ${qv(.99)} · ${fmtV(tot / d.dt)}/s` : "no data"}</div>`;
+        if (i === ri && c && tot) html += `<div>&nbsp;&nbsp;${jb ? fmtLe(d.le[jb - 1]) : "0"} – ${fmtLe(d.le[jb])}: ${fmtV(c[jb])} obs (${(100 * c[jb] / tot).toFixed(1)}%)</div>`; });
+      html += `<div class="tipfoot">${F ? "\u2744 frozen \u00b7 " + (F.pinned ? "click/Esc" : "release \u21e7") + " to unfreeze" : "hold \u21e7 or click to freeze \u00b7 drag to zoom time"}</div>`;
+      this.tip.innerHTML = html; if (!this.tipOn) { this.tip.style.display = "block"; this.tipOn = true; }
+      const cx = mx * PX, flip = cx > this.cssW / 2; this.tip.style.transform = `translate(${flip ? cx - 14 : cx + 14}px,4px)${flip ? " translateX(-100%)" : ""}`;
+    });
+  }
+}
 // One window listener for drag-zoom, not one per chart.
 let dragging = null, hovered = null;
 window.addEventListener("keydown", (e) => {
@@ -654,7 +768,7 @@ setSide(ls("noside", false));
 
 S.panelSet = new Set(S.panels);
 // Custom plots are panels whose key is "=" + formula (evaluated per run by the server, see src/expr.rs).
-const isFx = (k) => k.startsWith("=");
+const isFx = (k) => k.startsWith("="), isHist = (k) => k.startsWith("#");
 async function checkFx(expr, runs = [...S.picked]) {
   const res = await (await api("/api/stats", { runs, expr, limit: 300 })).json();
   if (res.error) return { error: res.error };
@@ -672,7 +786,7 @@ function addPanels(keys, scroll) {
   for (const key of keys) {
     S.panels.push(key); S.panelSet.add(key);
     const p = document.createElement("div"); p.className = "panel bevel";
-    p.innerHTML = `<div class="ptitle"><span></span><em></em><button class="sbtn" title="y scale: lin → log → symlog">lin</button><button class="ybtn" title="set y min/max">y↕</button><button class="wbtn" title="full width">⇔</button><button class="xbtn">x</button></div><div class="plot"><div class="tip"></div></div>`;
+    p.innerHTML = `<div class="ptitle"><span></span><em></em><button class="sbtn" title="y scale: lin → log → symlog">lin</button><button class="ybtn" title="set y min/max">y↕</button><button class="wbtn" title="full width">⇔</button><button class="xbtn">x</button></div>${isHist(key) ? `<div class="hruns"></div>` : ""}<div class="plot"><div class="tip"></div></div>`;
     if (S.wide.has(key)) p.classList.add("wide");
     const title = p.querySelector(".ptitle"); title.draggable = true; title.title = "drag to reorder";
     title.addEventListener("dragstart", (e) => { dragKey = key; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", key); p.classList.add("dragging"); });
@@ -680,11 +794,13 @@ function addPanels(keys, scroll) {
     p.querySelector(".sbtn").onclick = () => { const o = S.yopt[key] || {}, order = ["lin", "log", "symlog"]; setYopt(key, { ...o, scale: order[(order.indexOf(o.scale || "lin") + 1) % 3] }); };
     p.querySelector(".ybtn").onclick = () => openYDialog(key);
     p.querySelector(".wbtn").onclick = () => { const on = p.classList.toggle("wide"); on ? S.wide.add(key) : S.wide.delete(key); save(); };
-    { const sp = p.querySelector("span"); sp.textContent = S.titles[key] || (isFx(key) ? key.slice(1) : key); sp.title = isFx(key) ? "ƒ " + key.slice(1) : key; sp.classList.toggle("fx", isFx(key)); }
+    { const sp = p.querySelector("span"); sp.textContent = S.titles[key] || (isFx(key) || isHist(key) ? key.slice(1) : key); sp.title = isFx(key) ? "ƒ " + key.slice(1) : isHist(key) ? key.slice(1) + " (histogram)" : key; sp.classList.toggle("fx", isFx(key)); sp.classList.toggle("hist", isHist(key)); }
+    if (isHist(key)) { const sb = p.querySelector(".sbtn"); sb.title = "colour: observations/s (rate) or share of each time slice (share)";
+      sb.onclick = () => { const o = S.yopt[key] || {}; setYopt(key, { ...o, scale: o.scale === "share" ? "lin" : "share" }); }; p.querySelector(".ybtn").style.display = "none"; }
     p.querySelector(".xbtn").onclick = () => removePanel(key);
     frag.appendChild(p);
-    const c = new Chart(key, p); p._chart = c; charts.set(key, c); c.sbtn = p.querySelector(".sbtn"); c.ybtn = p.querySelector(".ybtn");
-    c.sbtn.textContent = (S.yopt[key] || {}).scale || "lin"; c.ybtn.classList.toggle("on", S.yopt[key]?.min != null || S.yopt[key]?.max != null);
+    const c = isHist(key) ? new HistChart(key, p) : new Chart(key, p); p._chart = c; charts.set(key, c); c.sbtn = p.querySelector(".sbtn"); c.ybtn = p.querySelector(".ybtn");
+    c.sbtn.textContent = isHist(key) ? (S.yopt[key]?.scale === "share" ? "share" : "rate") : (S.yopt[key] || {}).scale || "lin"; c.ybtn.classList.toggle("on", S.yopt[key]?.min != null || S.yopt[key]?.max != null);
   }
   $("#panels").appendChild(frag);
   if (scroll && keys.length) charts.get(keys[0]).panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -784,7 +900,7 @@ S.llm = ls("llm", { provider: "openai", url: LLM_DEFAULTS.openai.url, key: "", m
 const saveLlm = () => localStorage.setItem("niu.llm", JSON.stringify(S.llm));
 const pick = (o, ks) => Object.fromEntries(ks.filter((k) => o[k] != null).map((k) => [k, o[k]]));
 const r4 = (v) => (typeof v === "number" && isFinite(v) ? +v.toPrecision(5) : v);
-function needKeys(keys) { const known = new Set(S.keys); return { ok: keys.filter((k) => known.has(k)), unknown: keys.filter((k) => !known.has(k)) }; }
+function needKeys(keys) { const known = new Set([...S.keys, ...S.hists.map((h) => "#" + h)]); return { ok: keys.filter((k) => known.has(k)), unknown: keys.filter((k) => !known.has(k)) }; }
 function setAlign(mode, key, above) {
   $("#amode").value = mode; if (key != null) $("#akey").value = key; if (above != null) $("#aval").value = above;
   $("#akey").dispatchEvent(new Event("input"));
@@ -800,9 +916,9 @@ const TOOLS = [
     run: async ({ names, mode = "set" }) => { const ok = names.filter((n) => S.runByName.has(n));
       if (mode === "set") S.picked = new Set(ok); else for (const n of ok) mode === "add" ? S.picked.add(n) : S.picked.delete(n);
       save(); filterRuns(); invalidate(true); await refreshKeys(); return { picked: [...S.picked], unknown: names.filter((n) => !S.runByName.has(n)) }; } },
-  { name: "list_metrics", description: "List metric series keys available in the picked runs. Keys look like `endpoint/metric{labels}` or `endpoint/metric [col=val]`. Always use exact keys from here.",
+  { name: "list_metrics", description: "List metric series keys available in the picked runs. Keys look like `endpoint/metric{labels}` or `endpoint/metric [col=val]`. Keys starting with # are Prometheus histograms: add_charts draws them as one time x bucket heatmap per run (with p50/p99). Always use exact keys from here.",
     parameters: { type: "object", properties: { regex: { type: "string", description: "case-insensitive regex filter" }, limit: { type: "number" } } },
-    run: ({ regex = "", limit = 300 }) => { const re = new RegExp(regex, "i"), ks = S.keys.filter((k) => re.test(k)); return { total: ks.length, keys: ks.slice(0, limit) }; } },
+    run: ({ regex = "", limit = 300 }) => { const re = new RegExp(regex, "i"), ks = [...S.hists.map((h) => "#" + h), ...S.keys].filter((k) => re.test(k)); return { total: ks.length, keys: ks.slice(0, limit) }; } },
   { name: "metric_stats", description: "Per run x series summary (n, first/last time and value, min, max, mean) for series matching key_regex. Use it to answer questions about values before charting. Times are seconds since run start, or since the T=0 anchor when aligned=true.",
     parameters: { type: "object", properties: { key_regex: { type: "string" }, expr: { type: "string", description: "instead of key_regex: summarise a custom-plot formula, one row per run" }, runs: { type: "array", items: { type: "string" }, description: "default: picked runs" }, t0: { type: "number" }, t1: { type: "number" }, aligned: { type: "boolean" } } },
     run: async ({ key_regex = "", expr, runs, t0, t1, aligned }) => {
@@ -926,7 +1042,7 @@ drawBackground(); animateNiu($("#logo")); document.querySelectorAll(".niu").forE
 (async () => {
   await refreshRuns();
   await refreshKeys();
-  const initial = S.panels.length ? S.panels : S.keys.filter((k) => /loss|grad_norm|learning_rate|utilization.*gpu=0|eval_acc/.test(k)).slice(0, 6);
+  const initial = S.panels.length ? S.panels : [...S.keys.filter((k) => /loss|grad_norm|learning_rate|utilization.*gpu=0|eval_acc/.test(k)).slice(0, 5), ...S.hists.slice(0, 1).map((h) => "#" + h)];
   S.panels = []; S.panelSet = new Set(); addPanels(initial);
   connect();
 })();

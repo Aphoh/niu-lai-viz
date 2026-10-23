@@ -289,6 +289,8 @@ struct KeysReq {
 #[derive(Serialize, Default)]
 struct KeysResp {
     keys: Vec<String>,
+    /// Histogram metrics (see `hist::bucket_of`); their bucket series are not in `keys`.
+    hists: Vec<String>,
     errors: BTreeMap<String, String>,
 }
 
@@ -304,17 +306,25 @@ async fn keys(State(app): State<Shared>, Json(req): Json<KeysReq>) -> Response {
                 )
             })
             .collect();
-        let mut keys = BTreeSet::new();
+        let (mut keys, mut hists) = (BTreeSet::new(), BTreeSet::new());
         let mut out = KeysResp::default();
         for (r, res) in per_run {
             match res {
-                Ok(k) => keys.extend(k),
+                Ok(ks) => {
+                    for k in ks {
+                        match crate::hist::bucket_of(&k) {
+                            Some((base, _)) => hists.insert(base),
+                            None => keys.insert(k),
+                        };
+                    }
+                }
                 Err(e) => {
                     out.errors.insert(r, e.to_string());
                 }
             }
         }
         out.keys = keys.into_iter().collect();
+        out.hists = hists.into_iter().collect();
         out
     })
     .await
@@ -753,6 +763,132 @@ fn stats_blocking(app: &App, req: StatsReq) -> StatsResp {
     }
 }
 
+#[derive(Deserialize)]
+struct HistReq {
+    runs: Vec<String>,
+    /// Histogram base key from `/api/keys` `hists`.
+    key: String,
+    /// Number of equal time windows across [x0, x1].
+    slices: usize,
+    #[serde(default)]
+    x0: Option<f64>,
+    #[serde(default)]
+    x1: Option<f64>,
+    #[serde(default)]
+    align: Option<Align>,
+}
+
+#[derive(Serialize)]
+struct HistRun {
+    name: String,
+    offset: f64,
+    /// Bucket upper bounds, ascending; `null` is +Inf.
+    le: Vec<Option<f64>>,
+    /// Per window, observations per bucket (`null`: no data or counter reset).
+    counts: Vec<Option<Vec<f32>>>,
+}
+
+#[derive(Serialize, Default)]
+struct HistResp {
+    x0: f64,
+    x1: f64,
+    runs: Vec<HistRun>,
+    errors: BTreeMap<String, String>,
+}
+
+fn hist_buckets<'a>(d: &'a RunData, key: &str) -> Vec<(f64, &'a Series)> {
+    let mut b: Vec<(f64, &Series)> = d
+        .keys
+        .iter()
+        .zip(&d.series)
+        .filter_map(|(k, s)| {
+            crate::hist::bucket_of(k)
+                .filter(|(base, _)| base == key)
+                .map(|(_, le)| (le, s))
+        })
+        .collect();
+    b.sort_by(|x, y| x.0.total_cmp(&y.0));
+    b.dedup_by(|x, y| x.0 == y.0);
+    b
+}
+
+fn hist_blocking(app: &App, req: HistReq) -> HistResp {
+    let anchor_re = req.align.as_ref().and_then(|a| Regex::new(&a.key).ok());
+    let found: Vec<(String, Result<Option<(f64, f64, f64)>, String>)> = req
+        .runs
+        .par_iter()
+        .map(|r| {
+            let res = app.run(r).map_err(|e| e.to_string()).map(|d| {
+                let mut d = d.write().unwrap();
+                let offset = match (&req.align, anchor_re.as_ref()) {
+                    (Some(a), Some(re)) => d.anchor(a, re)?,
+                    _ => 0.0,
+                };
+                let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+                for (_, s) in hist_buckets(&d, &req.key) {
+                    if let (Some(&a), Some(&b)) = (s.t.first(), s.t.last()) {
+                        lo = lo.min(a as f64 - offset);
+                        hi = hi.max(b as f64 - offset);
+                    }
+                }
+                lo.is_finite().then_some((offset, lo, hi))
+            });
+            (r.clone(), res)
+        })
+        .collect();
+    let mut out = HistResp::default();
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for (r, res) in &found {
+        match res {
+            Ok(Some((_, a, b))) => {
+                lo = lo.min(*a);
+                hi = hi.max(*b);
+            }
+            Ok(None) => {}
+            Err(e) => {
+                out.errors.insert(r.clone(), e.clone());
+            }
+        }
+    }
+    out.x0 = req.x0.unwrap_or(if lo.is_finite() { lo } else { 0.0 });
+    out.x1 = req.x1.unwrap_or(if hi.is_finite() { hi } else { 1.0 });
+    if out.x1 <= out.x0 {
+        out.x1 = out.x0 + 1.0;
+    }
+    let n = req.slices.clamp(1, 4096);
+    let edges: Vec<f64> = (0..=n)
+        .map(|k| out.x0 + (out.x1 - out.x0) * k as f64 / n as f64)
+        .collect();
+    out.runs = found
+        .par_iter()
+        .filter_map(|(r, res)| {
+            let &Ok(Some((offset, _, _))) = res else {
+                return None;
+            };
+            let d = app.run(r).ok()?;
+            let d = d.read().unwrap();
+            let b = hist_buckets(&d, &req.key);
+            Some(HistRun {
+                name: r.clone(),
+                offset,
+                le: b
+                    .iter()
+                    .map(|(le, _)| le.is_finite().then_some(*le))
+                    .collect(),
+                counts: crate::hist::slices(&b, offset, &edges),
+            })
+        })
+        .collect();
+    out
+}
+
+async fn hist(State(app): State<Shared>, Json(req): Json<HistReq>) -> Response {
+    let out = tokio::task::spawn_blocking(move || hist_blocking(&app, req))
+        .await
+        .unwrap_or_default();
+    Json(out).into_response()
+}
+
 fn js(src: &'static str) -> Response {
     (
         [
@@ -866,6 +1002,7 @@ pub fn router(root: PathBuf) -> Router {
         .route("/api/keys", post(keys))
         .route("/api/plot", post(plot))
         .route("/api/stats", post(stats))
+        .route("/api/hist", post(hist))
         .route("/api/events", get(events))
         .with_state(app)
 }
