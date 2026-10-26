@@ -137,6 +137,63 @@ body.chat-open #chat { display: flex; }
 #perf { position: fixed; right: 8px; bottom: 4px; font-size: 10px; color: var(--fur-l); text-shadow: 1px 1px 0 #000; pointer-events: none; }
 ::-webkit-scrollbar { width: 14px; } ::-webkit-scrollbar-thumb { background: var(--snout); border: 3px solid var(--snout-d); }
 ::-webkit-scrollbar-track { background: var(--fur-d); }
+
+/* ---------- niu-lai off: plain theme ---------- */
+.plainonly { display: none; } body.plain .plainonly { display: inline-block; } body.plain .niuonly { display: none !important; }
+body.plain { font: 13px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #202124; background: #f4f5f7; }
+body.plain canvas { image-rendering: auto; }
+body.plain #bg, body.plain #logo, body.plain #logoslot, body.plain .tag, body.plain #empty canvas { display: none; }
+body.plain .bevel { background: #fff; border: 1px solid #dadce0; border-radius: 8px; box-shadow: 0 1px 2px rgba(60,64,67,.08); }
+body.plain .pit { background: #fff; border: 1px solid #e3e5e8; border-radius: 6px; }
+body.plain button, body.plain input, body.plain select, body.plain textarea { font: inherit; color: #202124; background: #fff; border: 1px solid #c7cbd1; border-radius: 6px; padding: 3px 9px; }
+body.plain button:hover { background: #f1f3f4; } body.plain button:active { background: #e8eaed; border-color: #c7cbd1; }
+body.plain button:disabled { opacity: .5; }
+body.plain header { padding: 8px 12px; } body.plain .brand { gap: 0; padding-right: 6px; }
+body.plain h1 { font: 650 19px/1 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #202124; transform: none; text-shadow: none; letter-spacing: -.01em; text-transform: lowercase; }
+body.plain .ctl { border: none; padding: 0; background: none; }
+body.plain .ctl label, body.plain #dash label { background: none; color: #5f6368; text-shadow: none; font-weight: 600; font-size: 12px; }
+body.plain #dash { border: none; background: none; }
+body.plain #live { background: #f1f3f4; color: #5f6368; font-size: 13px; padding: 4px 10px; border-radius: 999px; border: none; }
+body.plain #live.on { background: #e6f4ea; color: #137333; animation: none; }
+body.plain h2 { background: none; color: #3c4043; text-shadow: none; font-size: 11px; letter-spacing: .06em; font-weight: 650; border-bottom: 1px solid #eceef1; padding: 2px 2px 6px; }
+body.plain h2 small { color: #80868b; font-weight: 500; }
+body.plain #chat h2 button { font-size: 11px; padding: 1px 7px; }
+body.plain .vrow { border-bottom: 1px solid #f1f3f4; } body.plain .vrow:hover { background: #f6f8fa; } body.plain .vrow.on { background: #e8f0fe; }
+body.plain .swatch { border: none; border-radius: 3px; }
+body.plain .status { border: none; border-radius: 4px; font-size: 10px; padding: 1px 5px; }
+body.plain .status.running { background: #e6f4ea; color: #137333; } body.plain .status.finished { background: #f1f3f4; color: #5f6368; }
+body.plain .status.stale, body.plain .status.failed { background: #fce8e6; color: #a50e0e; text-decoration: none; }
+body.plain .labels, body.plain .muted { color: #80868b; }
+body.plain .ptitle { background: none; color: #202124; text-shadow: none; font-weight: 600; padding: 0 2px; }
+body.plain .ptitle em { color: #80868b; font-weight: 400; }
+body.plain .ptitle button { padding: 0 6px; font-size: 11px; border-color: #e3e5e8; color: #5f6368; }
+body.plain .ptitle .ybtn.on, body.plain .ptitle .nbtn.on, body.plain .hruns button.on { background: #e8f0fe; color: #1967d2; border-color: #aecbfa; }
+body.plain .ptitle span.fx::before, body.plain .ptitle span.hist::before, body.plain .key.hist::before { color: #1a73e8; }
+body.plain .plot { border: 1px solid #eceef1; background: #fff; border-radius: 4px; }
+body.plain .panel.drop-before { box-shadow: -4px 0 0 #1a73e8; } body.plain .panel.drop-after { box-shadow: 4px 0 0 #1a73e8; }
+body.plain .tip { background: #fff; border: 1px solid #dadce0; border-radius: 6px; box-shadow: 0 2px 10px rgba(60,64,67,.18); }
+body.plain .tip .hl { background: #e8f0fe; outline: none; } body.plain .tip .tipfoot { border-top: 1px solid #eceef1; color: #80868b; }
+body.plain .hruns button { font-size: 11px; padding: 0 6px; }
+body.plain .tip i, body.plain .hruns i { border: none; border-radius: 2px; }
+body.plain #empty { color: #5f6368; text-shadow: none; font-size: 16px; }
+body.plain #empty pre { background: #f8f9fa; border: 1px solid #dadce0; border-radius: 6px; }
+body.plain .msg { border: 1px solid #e3e5e8; border-radius: 8px; }
+body.plain .msg.user { background: #e8f0fe; } body.plain .msg.bot { background: #f8f9fa; }
+body.plain .msg.tool { background: #fff; color: #5f6368; } body.plain .msg.err { background: #fce8e6; color: #a50e0e; }
+body.plain .msg code { background: rgba(0,0,0,.06); border-radius: 3px; }
+body.plain .msg.bot h1, body.plain .msg.bot h2, body.plain .msg.bot h3, body.plain .msg.bot h4 { text-decoration: none; }
+body.plain .msg.bot pre { background: #f6f8fa; color: #24292f; border: 1px solid #eceef1; border-radius: 6px; }
+body.plain .msg.bot th, body.plain .msg.bot td, body.plain .pnote th, body.plain .pnote td { border: 1px solid #dadce0; }
+body.plain .msg.bot th { background: #f1f3f4; } body.plain .msg.bot tr:nth-child(even) td { background: #fafbfc; }
+body.plain .msg.bot blockquote { border-left-color: #dadce0; } body.plain .msg.bot a, body.plain .pnote a { color: #1a73e8; }
+body.plain .pnote { background: #f8f9fa; border: 1px solid #e3e5e8; border-radius: 6px; }
+body.plain #ydlg::backdrop, body.plain #fdlg::backdrop, body.plain #ndlg::backdrop { background: rgba(32,33,36,.35); }
+body.plain dialog.bevel { border: 1px solid #dadce0; box-shadow: 0 8px 28px rgba(60,64,67,.25); }
+body.plain #perf { color: #9aa0a6; text-shadow: none; }
+body.plain ::-webkit-scrollbar { width: 10px; } body.plain ::-webkit-scrollbar-thumb { background: #c7cbd1; border: 2px solid #fff; border-radius: 6px; }
+body.plain ::-webkit-scrollbar-track { background: transparent; }
+body.plain #chatin { background: #fff; border: 1px solid #c7cbd1; border-radius: 8px; outline: none; padding: 6px 8px; } body.plain #chatin:focus { border-color: #1a73e8; box-shadow: 0 0 0 2px rgba(26,115,232,.15); }
+#themetog, #askbtn { white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -159,7 +216,7 @@ body.chat-open #chat { display: flex; }
     <button id="unzoom" title="or double-click a chart">unzoom</button>
   </div>
   <div id="dash" class="pit"><label>DASH</label><select id="dsel" title="dashboards saved on this server"></select><button id="dsave" title="save this dashboard">save</button><button id="dsaveas" title="save as a new dashboard">as…</button><button id="dlink" title="copy a link that opens this dashboard">link</button><button id="ddel" title="delete this dashboard">del</button></div>
-  <div id="live" class="pit">OFFLINE</div>
+  <button id="askbtn" class="plainonly" title="ask the assistant about your runs">assistant</button><button id="themetog" title="switch between the niu-lai look and a plain one">niu-lai: on</button><div id="live" class="pit">OFFLINE</div>
 </header>
 <main>
   <aside>
@@ -292,8 +349,8 @@ const RUN_COLORS = ["#ff00ff", "#0047ff", "#ff6a00", "#7a00ff", "#d40000", "#008
 const colorCache = new Map();
 function color(name) {
   let c = colorCache.get(name);
-  if (!c) { const i = colorCache.size; c = i < RUN_COLORS.length ? RUN_COLORS[i] : `hsl(${(i * 137.508) % 360},${80 + (i % 3) * 10}%,${36 + (i % 4) * 6}%)`; colorCache.set(name, c); }
-  return c;
+  if (c === undefined) { c = colorCache.size; colorCache.set(name, c); }
+  return c < T.runs.length ? T.runs[c] : T.extra(c);
 }
 const rgbaCache = new Map(), rgbaCtx = document.createElement("canvas").getContext("2d", { willReadFrequently: true });
 function rgba(css) {
@@ -302,7 +359,24 @@ function rgba(css) {
     v = new Uint32Array(new Uint8ClampedArray([p[0], p[1], p[2], 255]).buffer)[0]; rgbaCache.set(css, v); }
   return v;
 }
-const SKY = rgba(PAL.sky), GRID = rgba("#6f9aa3");
+// Canvas look per theme. Chart coordinates are in logical px (PX CSS px each); canvases render RES device-ish px per logical px.
+const THEMES = {
+  niu: { res: () => 2, line: () => 1, margin: "#f6e7a6", text: PAL.barkD, ink: PAL.ink, inkText: PAL.furL, sky: PAL.sky, grid: "#6f9aa3", dash: [4, 2], frozen: "#ff00ff",
+    drag: "rgba(244,154,184,.45)", hl: [2, "#000", 1], cross: [1, 2], font: "8px monospace", fontB: "bold 8px monospace", tagBg: "rgba(36,20,10,.8)", nameBg: "rgba(246,231,166,.85)",
+    heat: ["#8fd0e8", "#5c9a2c", "#e8b923", "#f49ab8", "#ff00ff"], hq: [[.5, PAL.ink, []], [.9, PAL.ink, [3, 2]], [.99, "#ffffff", []]],
+    runs: RUN_COLORS, extra: (i) => `hsl(${(i * 137.508) % 360},${80 + (i % 3) * 10}%,${36 + (i % 4) * 6}%)` },
+  plain: { res: () => 2 * Math.max(1, devicePixelRatio || 1), line: () => Math.max(1, Math.round((devicePixelRatio || 1) * .75)), margin: "#ffffff", text: "#5f6368", ink: "#3c4043", inkText: "#ffffff",
+    sky: "#ffffff", grid: "#eceef1", dash: null, frozen: "#1a73e8", drag: "rgba(26,115,232,.12)", hl: [1.5, "rgba(255,255,255,.95)", .9], cross: [.5, 1],
+    font: "5.5px system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif", fontB: "600 5.5px system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif", tagBg: "rgba(32,33,36,.75)", nameBg: "rgba(255,255,255,.85)",
+    heat: ["#440154", "#3b528b", "#21918c", "#5ec962", "#fde725"], hq: [[.5, "#ffffff", []], [.9, "#ffffff", [3, 2]], [.99, "#ff3b30", []]],
+    runs: ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"], extra: (i) => `hsl(${(i * 137.508) % 360},55%,${40 + (i % 3) * 6}%)` },
+};
+let T = THEMES.niu, RES = 2, LINE = 1, SKY = 0, GRID = 0, PAPER32 = 0, HCOL = null, HQ = T.hq;
+function heatLut(stops) { const lut = new Uint32Array(256), h = (c) => [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16));
+  for (let i = 0; i < 256; i++) { const t = i / 255 * (stops.length - 1), k = Math.min(stops.length - 2, Math.floor(t)), a = h(stops[k]), b = h(stops[k + 1]), f = t - k;
+    lut[i] = rgba(`rgb(${a.map((v, j) => Math.round(v + (b[j] - v) * f)).join(",")})`); } return lut; }
+function setCanvasTheme(name) { T = THEMES[name] || THEMES.niu; RES = T.res(); LINE = T.line(); SKY = rgba(T.sky); GRID = rgba(T.grid); PAPER32 = rgba(T.margin); HCOL = heatLut(T.heat); HQ = T.hq; }
+setCanvasTheme(new URLSearchParams(location.search).get("theme") || localStorage.getItem("niu.theme") || "niu");
 const api = (path, body, signal) => fetch(path, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal } : { signal });
 const debounce = (f, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => f(...a), ms); }; };
 // Long run names: cut the middle so the distinctive prefix and suffix (seed, node, date) both stay.
@@ -329,8 +403,10 @@ const fitName = (g, nm, n, w) => nm(n, Math.max(4, Math.floor(w / g.measureText(
 const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 // ---------- virtual lists: only visible rows exist in the DOM ----------
+const VLISTS = [];
 class VList {
   constructor(el, rowH, render) {
+    VLISTS.push(this);
     this.el = el; this.rowH = rowH; this.render = render; this.items = []; this.spacer = el.firstElementChild; this.pool = [];
     el.addEventListener("scroll", () => this.schedule(), { passive: true });
     new ResizeObserver(() => this.schedule()).observe(el);
@@ -359,9 +435,10 @@ const runList = new VList($("#runs"), 34, (d, run) => {
   d.dataset.name = run.name;
   const st = run.status === "running" ? "LIVE" : run.status;
   const sn = S.namer(run.name, nmChars);
-  if (d._sig !== sn + st) {
-    d._sig = sn + st; d.title = run.name + (run._lab ? "\n" + run._lab : "");
-    d.innerHTML = `<div class="top"><div class="swatch" style="background:${color(run.name)}"></div><div class="nm">${esc(sn)}</div><div class="status ${run.status}">${st}</div></div><div class="labels">${esc(run._lab)}</div>`;
+  const col = color(run.name);
+  if (d._sig !== sn + st + col) {
+    d._sig = sn + st + col; d.title = run.name + (run._lab ? "\n" + run._lab : "");
+    d.innerHTML = `<div class="top"><div class="swatch" style="background:${col}"></div><div class="nm">${esc(sn)}</div><div class="status ${run.status}">${st}</div></div><div class="labels">${esc(run._lab)}</div>`;
   }
 });
 // Characters that fit in a run row's name slot, kept in sync with the (resizable) sidebar.
@@ -459,9 +536,10 @@ class Chart {
   // Sizes come from ResizeObserver entries, so nothing here ever forces layout.
   setSize(cssW, cssH) {
     const w = Math.max(40, Math.floor(cssW / PX)), h = Math.max(30, Math.floor(cssH / PX));
-    this.cssW = cssW; this.rect = null;
-    if (w === this.W && h === this.H) return false;
-    this.W = this.base.width = this.over.width = w; this.H = this.base.height = this.over.height = h;
+    this.cssW = cssW; this.cssH = cssH; this.rect = null;
+    if (w === this.W && h === this.H && RES === this.res) return false;
+    this.W = w; this.H = h; this.res = RES; this.base.width = this.over.width = Math.round(w * RES); this.base.height = this.over.height = Math.round(h * RES);
+    for (const c of [this.g, this.o]) { c.setTransform(RES, 0, 0, RES, 0, 0); c.imageSmoothingEnabled = false; }
     this.img = this.buf = null;
     return true;
   }
@@ -508,16 +586,17 @@ class Chart {
   drawNow() {
     const t0 = performance.now(), d = this.data, W = this.W, H = this.H; if (!d || !W) return;
     const pw = W - M.l - M.r, ph = H - M.t - M.b; if (pw <= 0 || ph <= 0) return;
-    if (!this.img) { this.img = new ImageData(pw, ph); this.buf = new Uint32Array(this.img.data.buffer); }
+    const rpw = Math.round(pw * RES), rph = Math.round(ph * RES);
+    if (!this.img || this.img.width !== rpw || this.img.height !== rph) { this.img = new ImageData(rpw, rph); this.buf = new Uint32Array(this.img.data.buffer); }
     const time = !S.xkey, g = this.g;
-    g.font = "8px monospace";
+    g.font = T.font;
     const xlab = (v) => time ? fmtT(v) : fmtV(v);
     let xt = ticks(d.x0, d.x1, Math.max(2, pw / 45), time);
     const lw = xt.reduce((m, v) => Math.max(m, g.measureText(xlab(v)).width), 0);
     if (xt.length > 1 && lw + 6 > pw / xt.length) xt = ticks(d.x0, d.x1, Math.max(1, pw / (lw + 10)), time);
     const yt = yticks(d, Math.max(2, (H - M.b) / 22));
-    this.rasterGrid(xt, yt.map((o) => o.t), pw, ph);
-    this.rasterLines(pw, ph);
+    this.rasterGrid(xt, yt.map((o) => o.t), rpw, rph);
+    this.rasterLines(rpw, rph);
     this.blit();
     this.labels(xt, yt, xlab);
     if (this.mouse) this.hover();
@@ -528,12 +607,14 @@ class Chart {
   rasterGrid(xt, yt, pw, ph) {
     const d = this.data, buf = this.buf, ax = pw / (d.x1 - d.x0), bx = -d.x0 * ax, ay = -ph / (d.y1 - d.y0), by = ph - d.y0 * ay;
     buf.fill(SKY);
-    for (const v of xt) { const x = Math.round(v * ax + bx); if (x < 0 || x >= pw) continue; for (let y = 0; y < ph; y += 4) { buf[y * pw + x] = GRID; if (y + 1 < ph) buf[(y + 1) * pw + x] = GRID; } }
-    for (const v of yt) { const y = Math.round(v * ay + by); if (y < 0 || y >= ph) continue; const o = y * pw; for (let x = 0; x < pw; x += 4) { buf[o + x] = GRID; if (x + 1 < pw) buf[o + x + 1] = GRID; } }
+    // Dashes are [period, on] in logical px; null is a solid line.
+    const per = T.dash ? Math.round(T.dash[0] * RES) : 1, on = T.dash ? Math.round(T.dash[1] * RES) : 1;
+    for (const v of xt) { const x = Math.round(v * ax + bx); if (x < 0 || x >= pw) continue; for (let y = 0; y < ph; y += per) for (let k = 0; k < on && y + k < ph; k++) buf[(y + k) * pw + x] = GRID; }
+    for (const v of yt) { const y = Math.round(v * ay + by); if (y < 0 || y >= ph) continue; const o = y * pw; for (let x = 0; x < pw; x += per) for (let k = 0; k < on && x + k < pw; k++) buf[o + x + k] = GRID; }
   }
   rasterLines(pw, ph) {
     const d = this.data, buf = this.buf, ax = pw / (d.x1 - d.x0), bx = -d.x0 * ax + 0.5, ay = -ph / (d.y1 - d.y0), by = ph - d.y0 * ay + 0.5;
-    const W1 = pw - 1, H1 = ph - 1;
+    const L = LINE, W1 = pw - L, H1 = ph - L;
     for (const s of d.series) {
       const xs = s.xs, ys = s.ty, n = xs.length, c = s.rgba;
       let px = Math.floor(xs[0] * ax + bx), py = Math.floor(ys[0] * ay + by);
@@ -543,22 +624,22 @@ class Chart {
         if (x !== px) {
           if (py >= 0 && py <= H1) {
             let lo = px < x ? px : x, hi = px < x ? x : px; if (lo < 0) lo = 0; if (hi > W1) hi = W1;
-            const row = py * pw; if (hi - lo < 16) { for (let k = row + lo, e = row + hi; k <= e; k++) buf[k] = c; } else buf.fill(c, row + lo, row + hi + 1);
+            for (let t = 0; t < L; t++) { const row = (py + t) * pw, e = hi + L - 1; if (e - lo < 16) { for (let k = row + lo, f = row + e; k <= f; k++) buf[k] = c; } else buf.fill(c, row + lo, row + e + 1); }
           }
           px = x;
         }
         if (y !== py) {
-          if (x >= 0 && x <= W1) { let lo = py < y ? py : y, hi = py < y ? y : py; if (lo < 0) lo = 0; if (hi > H1) hi = H1; for (let o = lo * pw + x, e = hi * pw + x; o <= e; o += pw) buf[o] = c; }
+          if (x >= 0 && x <= W1) { let lo = py < y ? py : y, hi = py < y ? y : py; if (lo < 0) lo = 0; if (hi > H1) hi = H1; for (let o = lo * pw + x, e = hi * pw + x; o <= e; o += pw) for (let t = 0; t < L; t++) buf[o + t] = c; }
           py = y;
         }
       }
     }
   }
-  blit() { this.g.putImageData(this.img, M.l, M.t); }
+  blit() { this.g.putImageData(this.img, Math.round(M.l * RES), Math.round(M.t * RES)); }
   labels(xt, yt, xlab) {
     const g = this.g, d = this.data, W = this.W, H = this.H;
-    g.fillStyle = "#f6e7a6"; g.fillRect(0, 0, M.l, H); g.fillRect(0, H - M.b, W, M.b); g.fillRect(W - M.r, 0, M.r, H); g.fillRect(0, 0, W, M.t);
-    g.textBaseline = "middle"; g.fillStyle = PAL.barkD; g.textAlign = "center";
+    g.fillStyle = T.margin; g.fillRect(0, 0, M.l, H); g.fillRect(0, H - M.b, W, M.b); g.fillRect(W - M.r, 0, M.r, H); g.fillRect(0, 0, W, M.t);
+    g.textBaseline = "middle"; g.fillStyle = T.text; g.textAlign = "center";
     for (const v of xt) { const x = Math.round(this.xp(v)); if (x >= M.l && x <= W - M.r) g.fillText(xlab(v), x, H - M.b / 2); }
     g.textAlign = "right";
     for (const o of yt) { const y = Math.round(this.yp(o.t)); if (y >= M.t && y <= H - M.b) g.fillText(fmtV(o.v), M.l - 2, y); }
@@ -572,7 +653,7 @@ class Chart {
     if (this.hoverRaf) return;
     this.hoverRaf = requestAnimationFrame(() => {
       this.hoverRaf = 0; const o = this.o, d = this.data, F = this.frozen; o.clearRect(0, 0, this.W, this.H);
-      if (this.drag) { o.fillStyle = "rgba(244,154,184,.45)"; o.fillRect(Math.min(this.drag.x0, this.drag.x1), M.t, Math.abs(this.drag.x1 - this.drag.x0), this.H - M.t - M.b); }
+      if (this.drag) { o.fillStyle = T.drag; o.fillRect(Math.min(this.drag.x0, this.drag.x1), M.t, Math.abs(this.drag.x1 - this.drag.x0), this.H - M.t - M.b); }
       const mx = F ? F.mx : this.mouse?.x;
       if (!d || mx == null || mx < M.l) { if (this.tipOn) { this.tip.style.display = "none"; this.tipOn = false; } return; }
       // Top-K nearest by screen distance in one pass, no allocation per series.
@@ -588,20 +669,20 @@ class Chart {
         let j = K - 1; while (j > 0 && topD[j - 1] > dist) { topD[j] = topD[j - 1]; topV[j] = topV[j - 1]; topT[j] = topT[j - 1]; topS[j] = topS[j - 1]; j--; }
         topD[j] = dist; topV[j] = v; topT[j] = tv; topS[j] = s;
       }
-      o.fillStyle = F ? "#ff00ff" : PAL.barkD; o.fillRect(Math.round(mx), M.t, F ? 2 : 1, ph);
+      o.fillStyle = F ? T.frozen : T.text; o.fillRect(Math.round(mx), M.t, T.cross[F ? 1 : 0], ph);
       if (this.mouse && this.mouse.y >= M.t && this.mouse.y <= this.H - M.b) {
         const yy = Math.round(this.mouse.y), tv = d.y0 + (this.H - M.b - yy) / ph * (d.y1 - d.y0), yv = d.scale === "lin" ? tv : YINV[d.scale](tv);
-        o.fillStyle = "rgba(59,35,16,.6)"; for (let x = M.l; x < this.W - M.r; x += 3) o.fillRect(x, yy, 2, 1);
-        o.font = "8px monospace"; o.textBaseline = "middle";
-        const yl = fmtV(yv), yw = o.measureText(yl).width + 4; o.fillStyle = PAL.ink; const bx = Math.max(0, M.l - yw - 1); o.fillRect(bx, yy - 5, yw, 10); o.fillStyle = PAL.furL; o.textAlign = "left"; o.fillText(yl, bx + 2, yy);
+        o.fillStyle = T.text; o.globalAlpha = .6; for (let x = M.l; x < this.W - M.r; x += 3) o.fillRect(x, yy, 2, T.cross[0]); o.globalAlpha = 1;
+        o.font = T.font; o.textBaseline = "middle";
+        const yl = fmtV(yv), yw = o.measureText(yl).width + 4; o.fillStyle = T.ink; const bx = Math.max(0, M.l - yw - 1); o.fillRect(bx, yy - 5, yw, 10); o.fillStyle = T.inkText; o.textAlign = "left"; o.fillText(yl, bx + 2, yy);
       }
       { const xl = S.xkey ? fmtV(xv) : fmtT(xv), xw = o.measureText(xl).width + 6, xx = Math.round(mx);
-        o.font = "8px monospace"; o.textBaseline = "middle"; o.fillStyle = F ? "#ff00ff" : PAL.ink; o.fillRect(xx - xw / 2, this.H - M.b, xw, M.b); o.fillStyle = PAL.furL; o.textAlign = "center"; o.fillText(xl, xx, this.H - M.b / 2); }
+        o.font = T.font; o.textBaseline = "middle"; o.fillStyle = F ? T.frozen : T.ink; o.fillRect(xx - xw / 2, this.H - M.b, xw, M.b); o.fillStyle = T.inkText; o.textAlign = "center"; o.fillText(xl, xx, this.H - M.b / 2); }
       const s = this.mouse ? topS[0] : null;
       if (s) { o.save(); o.beginPath(); o.rect(M.l, M.t, this.W - M.l - M.r, ph); o.clip();
-        this.path(o, s); o.lineWidth = 3; o.strokeStyle = "#000"; o.stroke(); o.lineWidth = 1; o.strokeStyle = s.color; o.stroke(); o.restore();
+        this.path(o, s); o.lineWidth = T.hl[0]; o.strokeStyle = T.hl[1]; o.stroke(); o.lineWidth = T.hl[2]; o.strokeStyle = s.color; o.stroke(); o.restore();
         const yy = Math.round(this.yp(topT[0])), xx = Math.round(mx);
-        o.fillStyle = "#000"; o.fillRect(xx - 2, yy - 2, 5, 5); o.fillStyle = s.color; o.fillRect(xx - 1, yy - 1, 3, 3); }
+        o.fillStyle = T.hl[1]; o.fillRect(xx - 2, yy - 2, 5, 5); o.fillStyle = s.color; o.fillRect(xx - 1.5, yy - 1.5, 4, 4); }
       const head = `<div>${S.xkey ? fmtV(xv) : "t=" + fmtT(xv)} \u00b7 ${count} runs</div>`;
       if (F) {
         // Frozen: every run at this x, sorted by value; built once, then only the highlight moves.
@@ -636,16 +717,11 @@ class Chart {
 }
 // ---------- histograms: one heatmap per shown run (time x bucket, colour = observations) ----------
 // Panel key "#" + base from /api/keys `hists`; the server differences the cumulative buckets (src/hist.rs).
-const PAPER32 = rgba("#f6e7a6");
-const HCOL = (() => { const stops = ["#8fd0e8", "#5c9a2c", "#e8b923", "#f49ab8", "#ff00ff"], lut = new Uint32Array(256), h = (c) => [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16));
-  for (let i = 0; i < 256; i++) { const t = i / 255 * (stops.length - 1), k = Math.min(stops.length - 2, Math.floor(t)), a = h(stops[k]), b = h(stops[k + 1]), f = t - k;
-    lut[i] = rgba(`rgb(${a.map((v, j) => Math.round(v + (b[j] - v) * f)).join(",")})`); } return lut; })();
 // Quantile as {j: bucket, f: fraction into it}, like PromQL histogram_quantile (linear within a bucket).
 function hq(c, q) { let tot = 0; for (const v of c) tot += v; if (!(tot > 0)) return null; const r = q * tot; let acc = 0;
   for (let j = 0; j < c.length; j++) { if (c[j] > 0 && acc + c[j] >= r) return { j, f: (r - acc) / c[j] }; acc += c[j]; } return null; }
 function hqVal(le, h) { if (!h) return NaN; const hi = le[h.j], lo = h.j ? le[h.j - 1] : 0; return hi === Infinity ? lo : lo + (hi - lo) * h.f; }
 // Quantile overlays: [q, colour, dash]. White p99 stays visible on every heatmap colour.
-const HQ = [[.5, "#24140a", []], [.9, "#24140a", [3, 2]], [.99, "#ffffff", []]];
 // Bucket bounds at 3 significant digits; small ones in SI (0.0005 -> 500µ) so labels stay short.
 const fmtLe = (v) => { if (v === Infinity) return "+Inf"; const a = Math.abs(v);
   if (a > 0 && a < 0.01) for (const [d, u] of [[1e-3, "m"], [1e-6, "µ"], [1e-9, "n"]]) if (a >= d) return +(v / d).toPrecision(3) + u;
@@ -654,6 +730,9 @@ class HistChart extends Chart {
   constructor(key, panel) { super(key, panel); this.chips = panel.querySelector(".hruns");
     this.chips.addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) this.toggleRun(b.dataset.n); }); }
   shown() { const sel = (S.hsel[this.key] || []).filter((n) => S.picked.has(n)); return sel.length ? sel : [...S.picked].slice(0, 2); }
+  // Heatmap cells are blocks: raster at logical px, then scale up unsmoothed.
+  blit() { const c = this.off || (this.off = document.createElement("canvas")); if (c.width !== this.img.width || c.height !== this.img.height) { c.width = this.img.width; c.height = this.img.height; }
+    c.getContext("2d").putImageData(this.img, 0, 0); this.g.imageSmoothingEnabled = false; this.g.drawImage(c, M.l, M.t); }
   toggleRun(n) { let sel = this.shown(); sel = sel.includes(n) ? sel.filter((x) => x !== n) : [...sel, n].slice(-3);
     S.hsel[this.key] = sel; save(); this.renderChips(); this.dirty = true; this.last = 0; pump(); }
   renderChips() { const sh = new Set(this.shown()), names = [...S.picked], short = namer(names), sig = names.join("\0") + "|" + [...sh].join("\0"); if (sig === this.chipSig) return; this.chipSig = sig;
@@ -701,7 +780,7 @@ class HistChart extends Chart {
           for (let y = y0; y < y1; y++) buf.fill(col, y * pw + x0, y * pw + x1); } } });
     this.blit();
     // p50 / p90 / p99 through slice centres in bucket-row space, labelled at their right end.
-    g.lineWidth = 1; g.font = "bold 8px monospace"; g.textBaseline = "middle"; g.textAlign = "left";
+    g.lineWidth = 1 / Math.min(2, RES / 2); g.font = T.fontB; g.textBaseline = "middle"; g.textAlign = "left";
     d.runs.forEach((r, ri) => { const top = M.t + this.rows[ri], tags = [];
       HQ.forEach(([q, col, dash], qi) => { const qs = r.q[qi]; g.strokeStyle = col; g.setLineDash(dash); g.beginPath(); let on = false, end = null;
         for (let k = 0; k < d.n; k++) { const h = qs[k]; if (!h) { on = false; continue; } const x = M.l + (k + .5) * pw / d.n, y = top + rh - (h.j + h.f) * rh / nb;
@@ -709,15 +788,15 @@ class HistChart extends Chart {
         if (end && end[0] > M.l + 70) tags.push({ t: "p" + q * 100, col, x: end[0], y: end[1] }); });
       tags.sort((a, b) => b.y - a.y); let floor = Infinity;
       for (const t of tags) { const w = g.measureText(t.t).width + 4, y = Math.max(top + 5, Math.min(t.y, floor - 9, top + rh - 5)); floor = y;
-        const x = Math.min(t.x + 2, M.l + pw - w); g.fillStyle = "rgba(36,20,10,.8)"; g.fillRect(x, y - 4, w, 9); g.fillStyle = t.col === "#24140a" ? "#fff08a" : t.col; g.fillText(t.t, x + 2, y + .5); } });
-    g.fillStyle = "#f6e7a6"; g.fillRect(0, 0, M.l, H); g.fillRect(0, H - M.b, W, M.b); g.fillRect(W - M.r, 0, M.r, H); g.fillRect(0, 0, W, M.t);
-    g.font = "8px monospace"; g.textBaseline = "middle"; g.fillStyle = PAL.barkD; g.textAlign = "center";
+        const x = Math.min(t.x + 2, M.l + pw - w); g.fillStyle = T.tagBg; g.fillRect(x, y - 4, w, 9); g.fillStyle = t.col === T.ink ? T.inkText : t.col; g.fillText(t.t, x + 2, y + .5); } });
+    g.fillStyle = T.margin; g.fillRect(0, 0, M.l, H); g.fillRect(0, H - M.b, W, M.b); g.fillRect(W - M.r, 0, M.r, H); g.fillRect(0, 0, W, M.t);
+    g.font = T.font; g.textBaseline = "middle"; g.fillStyle = T.text; g.textAlign = "center";
     const xt = ticks(d.x0, d.x1, Math.max(2, pw / 45), true); for (const v of xt) { const x = Math.round(this.xp(v)); if (x >= M.l && x <= W - M.r) g.fillText(fmtT(v), x, H - M.b / 2); }
     g.textAlign = "right"; const stride = Math.max(1, Math.ceil(9 / (rh / nb)));
     d.runs.forEach((r, ri) => { const top = M.t + this.rows[ri];
       for (let j = nb - 2; j >= 0; j -= stride) g.fillText(fmtLe(d.le[j]), M.l - 2, Math.round(top + rh - (j + 1) * rh / nb));
-      g.font = "bold 8px monospace"; const nm = fitName(g, d.namer, r.name, pw * .6), w = g.measureText(nm).width; g.fillStyle = "rgba(246,231,166,.85)"; g.fillRect(M.l + 1, top + 1, w + 14, 10);
-      g.fillStyle = r.color; g.fillRect(M.l + 3, top + 3, 6, 6); g.fillStyle = PAL.ink; g.textAlign = "left"; g.fillText(nm, M.l + 12, top + 6); g.textAlign = "right"; g.font = "8px monospace"; g.fillStyle = PAL.barkD; });
+      g.font = T.fontB; const nm = fitName(g, d.namer, r.name, pw * .6), w = g.measureText(nm).width; g.fillStyle = T.nameBg; g.fillRect(M.l + 1, top + 1, w + 14, 10);
+      g.fillStyle = r.color; g.fillRect(M.l + 3, top + 3, 6, 6); g.fillStyle = T.ink; g.textAlign = "left"; g.fillText(nm, M.l + 12, top + 6); g.textAlign = "right"; g.font = T.font; g.fillStyle = T.text; });
     const info = `${d.runs.length}/${S.picked.size} runs · p50 · p90 dashed · p99 white${d.missing ? ` · ${d.missing} w/o data` : ""}`; if (this.info.textContent !== info) this.info.textContent = info;
     if (this.mouse || this.frozen) this.hover();
     perf.drawn(performance.now() - t0);
@@ -726,14 +805,14 @@ class HistChart extends Chart {
     if (this.hoverRaf) return;
     this.hoverRaf = requestAnimationFrame(() => {
       this.hoverRaf = 0; const o = this.o, d = this.data, F = this.frozen; o.clearRect(0, 0, this.W, this.H);
-      if (this.drag) { o.fillStyle = "rgba(244,154,184,.45)"; o.fillRect(Math.min(this.drag.x0, this.drag.x1), M.t, Math.abs(this.drag.x1 - this.drag.x0), this.H - M.t - M.b); }
+      if (this.drag) { o.fillStyle = T.drag; o.fillRect(Math.min(this.drag.x0, this.drag.x1), M.t, Math.abs(this.drag.x1 - this.drag.x0), this.H - M.t - M.b); }
       const mx = F ? F.mx : this.mouse?.x, pw = this.W - M.l - M.r, k = d && mx != null ? Math.floor((mx - M.l) / pw * d.n) : -1;
       if (!d || !this.rows || k < 0 || k >= d.n) { if (this.tipOn) { this.tip.style.display = "none"; this.tipOn = false; } return; }
-      const nb = d.le.length, rh = this.rh; o.fillStyle = F ? "#ff00ff" : PAL.barkD; o.fillRect(Math.round(mx), M.t, F ? 2 : 1, this.H - M.t - M.b);
+      const nb = d.le.length, rh = this.rh; o.fillStyle = F ? T.frozen : T.text; o.fillRect(Math.round(mx), M.t, T.cross[F ? 1 : 0], this.H - M.t - M.b);
       const my = this.mouse ? this.mouse.y - M.t : -1; let ri = -1, jb = -1;
       this.rows.forEach((top, i) => { if (my >= top && my < top + rh) { ri = i; jb = Math.min(nb - 1, Math.floor((top + rh - my) / rh * nb)); } });
       if (ri >= 0) { const top = M.t + this.rows[ri], x0 = M.l + Math.floor(k * pw / d.n), x1 = M.l + Math.floor((k + 1) * pw / d.n);
-        o.strokeStyle = "#24140a"; o.lineWidth = 1; o.strokeRect(x0 - .5, top + rh - Math.floor((jb + 1) * rh / nb) - .5, Math.max(2, x1 - x0) + 1, Math.floor((jb + 1) * rh / nb) - Math.floor(jb * rh / nb) + 1); }
+        o.strokeStyle = T.ink; o.lineWidth = T.cross[1] / 2; o.strokeRect(x0 - .5, top + rh - Math.floor((jb + 1) * rh / nb) - .5, Math.max(2, x1 - x0) + 1, Math.floor((jb + 1) * rh / nb) - Math.floor(jb * rh / nb) + 1); }
       let html = `<b>${fmtT(d.x0 + (k + .5) * d.dt)}</b> <small>(${fmtT(d.dt)} slice)</small>`;
       d.runs.forEach((r, i) => { const c = r.counts[k]; let tot = 0; if (c) for (const v of c) tot += v;
         const qv = (q) => fmtLe(hqVal(d.le, c && hq(c, q)));
@@ -1192,7 +1271,21 @@ function showNoRuns() {
   --label lr=3e-4</pre><small>runs appear here live · more in the README ("Scrape your own job") · or try examples/demo.py</small>`;
   drawNiu(el.querySelector("canvas"));
 }
-window.niu = { charts, S, frameWork, FRAME_BUDGET, TOOLS }; // for benchmarks and console poking
+// niu-lai on/off. ?theme=plain|niu in the URL wins, then this browser's last choice.
+function applyTheme(name) {
+  const plain = name === "plain"; document.body.classList.toggle("plain", plain); setCanvasTheme(plain ? "plain" : "niu");
+  $("#themetog").textContent = plain ? "niu-lai: off" : "niu-lai: on";
+  $("#chat h2 > span").textContent = plain ? "assistant" : "niu lai says"; $("#chatsend").textContent = plain ? "send" : "moo";
+  $("#chatin").placeholder = plain ? 'ask about your runs, e.g. "compare loss across lr, log scale"  (enter sends, shift+enter newline)' : 'moo? e.g. "compare loss across lr, log scale"  (enter sends, shift+enter newline)';
+  for (const c of charts.values()) { c.chipSig = null; if (c.cssW) c.setSize(c.cssW, c.cssH); c.dirty = true; c.last = 0; if (c.data) c.draw(); }
+  for (const v of VLISTS) v.schedule(true);
+  if (charts.size) pump();
+}
+let theme = new URLSearchParams(location.search).get("theme") || localStorage.getItem("niu.theme") || "niu";
+$("#themetog").onclick = () => { theme = theme === "plain" ? "niu" : "plain"; localStorage.setItem("niu.theme", theme); applyTheme(theme); };
+$("#askbtn").onclick = () => openChat(!document.body.classList.contains("chat-open"));
+applyTheme(theme);
+window.niu = { charts, S, frameWork, FRAME_BUDGET, TOOLS, applyTheme }; // for benchmarks and console poking
 drawBackground(); animateNiu($("#logo")); document.querySelectorAll(".niu").forEach(drawNiu);
 (async () => {
   await refreshRuns();
