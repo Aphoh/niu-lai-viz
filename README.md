@@ -10,6 +10,24 @@ Scrapes Prometheus `/metrics` endpoints into Parquet runs and serves a live UI t
 
 https://github.com/user-attachments/assets/162efd4e-8f4f-49e2-92f7-8108bd38138a
 
+## Screenshots
+
+Compare runs on a shared T=0:
+
+![line charts for 7 runs](assets/screenshots/lines.png)
+
+Histogram metrics as heatmaps with p50/p90/p99 lines:
+
+![histogram heatmaps](assets/screenshots/heatmaps.png)
+
+Ask the assistant for a plot ("plot p99 time to first token for every run, 20s window"):
+
+![assistant adding a p99 TTFT chart](assets/screenshots/assistant.png)
+
+Pass `--niu-lai` (`nlv serve --niu-lai`) to get an authentic UI experience:
+
+![the niu-lai theme](assets/screenshots/niu-lai.png)
+
 
 
 ## Demo
