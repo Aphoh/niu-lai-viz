@@ -401,24 +401,15 @@ fn map_run(
         },
         _ => 0.0,
     };
-    let owned;
-    let s = match &req.expr {
-        Some(e) => {
-            let scope = crate::expr::Scope {
-                keys: &data.keys,
-                series: &data.series,
-            };
-            owned = crate::expr::eval(e, &scope)?;
-            match &owned {
-                Some(s) => s,
-                None => return Ok(None),
-            }
-        }
-        None => match data.get(&req.key) {
-            Some(s) => s,
-            None => return Ok(None),
-        },
+    let data = &*data;
+    let Some(s) = data.get(&req.key) else {
+        return Ok(None);
     };
+    Ok(map_series(data, s, offset, req).map(|m| (m, offset)))
+}
+
+/// Smooth `s` and put it on the plot's x-axis (aligned time, or `x_key`'s value).
+fn map_series(data: &RunData, s: &Series, offset: f64, req: &PlotReq) -> Option<Mapped> {
     let mut v = s.v.clone();
     if req.smooth > 0.0 {
         let a = req.smooth.min(0.999) as f32;
@@ -434,9 +425,7 @@ fn map_run(
     let x = match &req.x_key {
         None => s.t.iter().map(|&t| (t as f64 - offset) as f32).collect(),
         Some(xk) => {
-            let Some(xs) = data.get(xk) else {
-                return Ok(None);
-            };
+            let xs = data.get(xk)?;
             // Step-hold join: x at time t is the latest x sample at or before t.
             let mut j = 0;
             let mut out = Vec::with_capacity(s.t.len());
@@ -449,7 +438,156 @@ fn map_run(
             out
         }
     };
-    Ok(Some((Mapped { x, v }, offset)))
+    Some(Mapped { x, v })
+}
+
+/// A run named in run('...'): exact, else the one run whose name contains it.
+fn resolve_run(app: &App, pat: &str) -> Result<String, String> {
+    let is_run = |n: &str| valid_name(n) && app.root.join(n).join(META_FILE).is_file();
+    if is_run(pat) {
+        return Ok(pat.to_string());
+    }
+    let mut hits: Vec<String> = std::fs::read_dir(&app.root)
+        .map_err(|e| e.to_string())?
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter(|n| n.contains(pat) && is_run(n))
+        .collect();
+    hits.sort();
+    match hits.len() {
+        0 => Err(format!("run('{pat}'): no run has that in its name")),
+        1 => Ok(hits.remove(0)),
+        n => Err(format!(
+            "run('{pat}') matches {n} runs ({}, {}, ...); use more of the name",
+            hits[0], hits[1]
+        )),
+    }
+}
+
+/// Evaluate a formula in each of `runs`, or once when it only reads series
+/// inside run('name', ...) (then it's one line, named by the formula, already
+/// on the aligned axis with offset 0). `f(line name, run data, T=0 offset, series)`.
+#[allow(clippy::type_complexity)]
+fn eval_formula<T: Send>(
+    app: &App,
+    runs: &[String],
+    src: &str,
+    align: Option<&Align>,
+    f: impl Fn(&str, &RunData, f64, Series) -> T + Sync,
+) -> Result<Vec<(String, Result<Option<T>, String>)>, String> {
+    let e = crate::expr::parse(src)?;
+    let cross = !crate::expr::reads_own_run(&e);
+    let ext: Vec<(String, String)> = crate::expr::run_refs(&e)
+        .into_iter()
+        .map(|p| resolve_run(app, &p).map(|n| (p, n)))
+        .collect::<Result<_, _>>()?;
+    let anchor_re = align.and_then(|a| Regex::new(&a.key).ok());
+    let offset_of = |d: &mut RunData| match (align, anchor_re.as_ref()) {
+        (Some(a), Some(re)) => d.anchor(a, re),
+        _ => Some(0.0),
+    };
+    if ext.is_empty() {
+        let none = HashMap::new();
+        return Ok(runs
+            .par_iter()
+            .map(|r| {
+                let res = app.run(r).map_err(|e| e.to_string()).and_then(|d| {
+                    let mut d = d.write().unwrap();
+                    let Some(o) = offset_of(&mut d) else {
+                        return Ok(None);
+                    };
+                    let scope = crate::expr::Scope {
+                        keys: &d.keys,
+                        series: &d.series,
+                        offset: o,
+                        ext: &none,
+                    };
+                    let s = crate::expr::eval_parsed(&e, &scope)?;
+                    Ok(s.map(|s| f(r, &d, o, s)))
+                });
+                (r.clone(), res)
+            })
+            .collect());
+    }
+    let mut names: Vec<String> = if cross { Vec::new() } else { runs.to_vec() };
+    names.extend(ext.iter().map(|(_, n)| n.clone()));
+    names.sort();
+    names.dedup();
+    // Refresh and anchor under each run's write lock, then take one read guard
+    // per run in name order (a fixed order, so concurrent requests can't
+    // deadlock) and evaluate on this thread: no rayon while holding guards, as
+    // a stolen job could wait for a write lock on a run we hold.
+    type Loaded = Result<(Arc<RwLock<RunData>>, Option<f64>), String>;
+    let loaded: HashMap<String, Loaded> = names
+        .par_iter()
+        .map(|n| {
+            let r = app.run(n).map_err(|e| e.to_string()).map(|d| {
+                let o = offset_of(&mut d.write().unwrap());
+                (d, o)
+            });
+            (n.clone(), r)
+        })
+        .collect();
+    for (p, n) in &ext {
+        match &loaded[n] {
+            Err(e) => return Err(format!("run('{p}'): {e}")),
+            Ok((_, None)) => return Err(format!("run('{p}'): {n} has no T=0 anchor")),
+            Ok(_) => {}
+        }
+    }
+    let guards: HashMap<&str, (std::sync::RwLockReadGuard<RunData>, f64)> = names
+        .iter()
+        .filter_map(|n| {
+            let (d, o) = loaded[n].as_ref().ok()?;
+            Some((n.as_str(), (d.read().unwrap(), (*o)?)))
+        })
+        .collect();
+    let ext_map: HashMap<String, crate::expr::Ext> = ext
+        .iter()
+        .map(|(p, n)| {
+            let (g, o) = &guards[n.as_str()];
+            let x = crate::expr::Ext {
+                keys: &g.keys,
+                series: &g.series,
+                offset: *o,
+            };
+            (p.clone(), x)
+        })
+        .collect();
+    if cross {
+        let empty = RunData::default();
+        let scope = crate::expr::Scope {
+            keys: &[],
+            series: &[],
+            offset: 0.0,
+            ext: &ext_map,
+        };
+        let res = match crate::expr::eval_parsed(&e, &scope) {
+            Ok(None) => {
+                Err("the runs named in run(...) don't have the series this formula reads".into())
+            }
+            r => r.map(|s| s.map(|s| f(src, &empty, 0.0, s))),
+        };
+        return Ok(vec![(src.to_string(), res)]);
+    }
+    Ok(runs
+        .iter()
+        .map(|r| {
+            let res = match (loaded.get(r), guards.get(r.as_str())) {
+                (Some(Err(e)), _) => Err(e.clone()),
+                (_, None) => Ok(None),
+                (_, Some((g, o))) => {
+                    let scope = crate::expr::Scope {
+                        keys: &g.keys,
+                        series: &g.series,
+                        offset: *o,
+                        ext: &ext_map,
+                    };
+                    crate::expr::eval_parsed(&e, &scope).map(|s| s.map(|s| f(r, g, *o, s)))
+                }
+            };
+            (r.clone(), res)
+        })
+        .collect())
 }
 
 /// Min/max (or M4 when `m4`) decimation of points with x in [x0, x1] into
@@ -520,17 +658,37 @@ fn decimate(
 
 fn plot_blocking(app: &App, req: PlotReq) -> Vec<u8> {
     let anchor_re = req.align.as_ref().and_then(|a| Regex::new(&a.key).ok());
-    let mapped: Vec<(String, Result<Option<(Mapped, f64)>, String>)> = req
-        .runs
-        .par_iter()
-        .map(|r| {
-            let res = app
-                .run(r)
-                .map_err(|e| e.to_string())
-                .and_then(|d| map_run(&mut d.write().unwrap(), &req, anchor_re.as_ref()));
-            (r.clone(), res)
-        })
-        .collect();
+    type Line = (String, Result<Option<(Mapped, f64)>, String>);
+    let mapped: Vec<Line> = match &req.expr {
+        Some(src) => {
+            let cross = crate::expr::parse(src).is_ok_and(|e| !crate::expr::reads_own_run(&e));
+            let res = if cross && req.x_key.is_some() {
+                Err("a formula across runs needs time on the x axis".to_string())
+            } else {
+                eval_formula(app, &req.runs, src, req.align.as_ref(), |_, d, o, s| {
+                    map_series(d, &s, o, &req).map(|m| (m, o))
+                })
+            };
+            match res {
+                Ok(v) => v
+                    .into_iter()
+                    .map(|(n, r)| (n, r.map(Option::flatten)))
+                    .collect(),
+                Err(e) => vec![(src.clone(), Err(e))],
+            }
+        }
+        None => req
+            .runs
+            .par_iter()
+            .map(|r| {
+                let res = app
+                    .run(r)
+                    .map_err(|e| e.to_string())
+                    .and_then(|d| map_run(&mut d.write().unwrap(), &req, anchor_re.as_ref()));
+                (r.clone(), res)
+            })
+            .collect(),
+    };
     let (mut x0, mut x1) = (f64::INFINITY, f64::NEG_INFINITY);
     for (_, res) in &mapped {
         if let Ok(Some((m, _))) = res {
@@ -705,6 +863,36 @@ fn summarize(run: &str, key: &str, s: &Series, offset: f64, t0: f64, t1: f64) ->
 }
 
 fn stats_blocking(app: &App, req: StatsReq) -> StatsResp {
+    let limit = req.limit.unwrap_or(200).min(5000);
+    let (t0, t1) = (
+        req.t0.unwrap_or(f64::NEG_INFINITY),
+        req.t1.unwrap_or(f64::INFINITY),
+    );
+    if let Some(src) = &req.expr {
+        let (mut rows, mut error) = (Vec::new(), None);
+        match eval_formula(app, &req.runs, src, req.align.as_ref(), |r, _, o, s| {
+            summarize(r, src, &s, o, t0, t1)
+        }) {
+            Ok(v) => {
+                for (_, res) in v {
+                    match res {
+                        Ok(Some(Some(row))) => rows.push(row),
+                        Ok(_) => {}
+                        Err(e) => error = Some(e),
+                    }
+                }
+            }
+            Err(e) => error = Some(e),
+        }
+        rows.sort_by(|a: &StatRow, b| a.run.cmp(&b.run));
+        let truncated = rows.len() > limit;
+        rows.truncate(limit);
+        return StatsResp {
+            rows,
+            truncated,
+            error,
+        };
+    }
     let re = match Regex::new(&req.key) {
         Ok(r) => r,
         Err(e) => {
@@ -715,12 +903,7 @@ fn stats_blocking(app: &App, req: StatsReq) -> StatsResp {
         }
     };
     let anchor_re = req.align.as_ref().and_then(|a| Regex::new(&a.key).ok());
-    let limit = req.limit.unwrap_or(200).min(5000);
     let err = std::sync::Mutex::new(None::<String>);
-    let (t0, t1) = (
-        req.t0.unwrap_or(f64::NEG_INFINITY),
-        req.t1.unwrap_or(f64::INFINITY),
-    );
     let mut rows: Vec<StatRow> = req
         .runs
         .par_iter()
@@ -735,18 +918,6 @@ fn stats_blocking(app: &App, req: StatsReq) -> StatsResp {
                 },
                 _ => 0.0,
             };
-            if let Some(e) = &req.expr {
-                let scope = crate::expr::Scope {
-                    keys: &d.keys,
-                    series: &d.series,
-                };
-                match crate::expr::eval(e, &scope) {
-                    Ok(Some(s)) => out.extend(summarize(r, e, &s, offset, t0, t1)),
-                    Ok(None) => {}
-                    Err(e) => *err.lock().unwrap() = Some(e),
-                }
-                return out;
-            }
             for (key, s) in d.keys.iter().zip(&d.series) {
                 if re.is_match(key) {
                     out.extend(summarize(r, key, s, offset, t0, t1));

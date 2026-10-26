@@ -9,8 +9,13 @@
 //! key). Series are combined on the union of their timestamps, each holding
 //! its latest value. Functions: sum/mean/min/max/count(regex), rate(x[, window_s]),
 //! delta(x[, window_s]), abs(x), log10(x), sqrt(x), quantile(q, 'histogram'[, window_s]).
+//!
+//! `run('name', x)` evaluates `x` in another run, on the shared T=0 axis:
+//! `x - run('baseline', x)` is each run minus a baseline, and a formula that
+//! only reads series inside run(...) (`run('a', x) - run('b', x)`) is one line.
 use crate::server::Series;
 use regex::Regex;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
@@ -176,6 +181,54 @@ enum Val {
 pub struct Scope<'a> {
     pub keys: &'a [String],
     pub series: &'a [Series],
+    /// This run's T=0, in its own time_since_start.
+    pub offset: f64,
+    /// Runs named in run('name', x), keyed by the name as written.
+    pub ext: &'a HashMap<String, Ext<'a>>,
+}
+
+/// Another run's series, for run('name', x).
+pub struct Ext<'a> {
+    pub keys: &'a [String],
+    pub series: &'a [Series],
+    pub offset: f64,
+}
+
+/// Run names used in run('name', x), as written.
+pub fn run_refs(e: &Expr) -> Vec<String> {
+    fn walk(e: &Expr, out: &mut Vec<String>) {
+        match e {
+            Expr::Call(n, a) => {
+                if let (true, Some(Expr::Key(r))) = (n == "run", a.first()) {
+                    if !out.contains(r) {
+                        out.push(r.clone());
+                    }
+                }
+                a.iter().for_each(|x| walk(x, out));
+            }
+            Expr::Neg(x) => walk(x, out),
+            Expr::Bin(_, a, b) => {
+                walk(a, out);
+                walk(b, out);
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(e, &mut out);
+    out
+}
+
+/// Whether `e` reads the run it is evaluated in (any series outside run(...)).
+pub fn reads_own_run(e: &Expr) -> bool {
+    match e {
+        Expr::Num(_) => false,
+        Expr::Key(_) => true,
+        Expr::Neg(x) => reads_own_run(x),
+        Expr::Bin(_, a, b) => reads_own_run(a) || reads_own_run(b),
+        Expr::Call(n, _) if n == "run" => false,
+        Expr::Call(_, a) => a.iter().any(reads_own_run),
+    }
 }
 
 /// Missing series are `Ok(None)` (the run simply doesn't have them).
@@ -284,6 +337,26 @@ impl Scope<'_> {
             }
         };
         match name {
+            "run" => {
+                let [Expr::Key(r), x] = args else {
+                    return Err("run('run name', x), e.g. run('baseline', 'loss')".into());
+                };
+                let Some(o) = self.ext.get(r) else {
+                    return Err(format!("run('{r}') isn't available here"));
+                };
+                let sub = Scope {
+                    keys: o.keys,
+                    series: o.series,
+                    offset: o.offset,
+                    ext: self.ext,
+                };
+                // Onto this run's clock, so both share T=0.
+                let shift = self.offset - o.offset;
+                Ok(sub.eval(x)?.map(|v| match v {
+                    Val::Ser(t, v) => Val::Ser(t.into_iter().map(|t| t + shift).collect(), v),
+                    n => n,
+                }))
+            }
             "sum" | "mean" | "min" | "max" | "count" => {
                 let Expr::Key(pat) = one()? else {
                     return Err(format!("{name}() takes a quoted regex"));
@@ -369,7 +442,7 @@ impl Scope<'_> {
                 Ok(self.eval(one()?)?.map(|v| map(v, f)))
             }
             _ => Err(format!(
-                "unknown function {name}(); have sum mean min max count rate delta abs log10 sqrt quantile"
+                "unknown function {name}(); have sum mean min max count rate delta abs log10 sqrt quantile run"
             )),
         }
     }
@@ -441,8 +514,11 @@ fn map(v: Val, f: impl Fn(f64) -> f64) -> Val {
 
 /// Evaluate `src` over one run. A constant result is not a plot, so it errors.
 pub fn eval(src: &str, scope: &Scope) -> Result<Option<Series>, String> {
-    let e = parse(src)?;
-    match scope.eval(&e)? {
+    eval_parsed(&parse(src)?, scope)
+}
+
+pub fn eval_parsed(e: &Expr, scope: &Scope) -> Result<Option<Series>, String> {
+    match scope.eval(e)? {
         None => Ok(None),
         Some(Val::Num(_)) => Err("expression has no series in it".into()),
         Some(Val::Ser(t, v)) => Ok(Some(Series {
@@ -491,9 +567,12 @@ mod tests {
     #[test]
     fn evaluates_aggregates_rate_and_binops() {
         let (k, v) = scope();
+        let ext = HashMap::new();
         let sc = Scope {
             keys: &k,
             series: &v,
+            offset: 0.0,
+            ext: &ext,
         };
         let m = eval("mean('util')", &sc).unwrap().unwrap();
         assert_eq!(m.t, vec![0., 1., 2.]);
@@ -528,9 +607,12 @@ mod tests {
             s(&t, &[0., 10., 20., 30.]),
             s(&t, &[0., 1., 2., 3.]),
         ];
+        let ext = HashMap::new();
         let sc = Scope {
             keys: &k,
             series: &v,
+            offset: 0.0,
+            ext: &ext,
         };
         let p = eval("quantile(0.5, 'ep/lat', 10)", &sc).unwrap().unwrap();
         assert!(p.v[0].is_nan());
@@ -543,5 +625,56 @@ mod tests {
             .contains("matches 2"));
         assert!(eval("quantile(2, 'lat')", &sc).is_err());
         assert!(eval("quantile(0.5, 'nope')", &sc).unwrap().is_none());
+    }
+
+    #[test]
+    fn run_refs_and_cross_run_difference() {
+        let a = parse("run('a', 'x') - run('b', 'x')").unwrap();
+        assert_eq!(run_refs(&a), vec!["a", "b"]);
+        assert!(!reads_own_run(&a));
+        assert!(reads_own_run(&parse("'x' - run('b', 'x')").unwrap()));
+        let keys = vec!["x".to_string()];
+        let (sa, sb) = (
+            vec![s(&[10., 11., 12.], &[1., 2., 3.])],
+            vec![s(&[5., 6., 7.], &[10., 20., 30.])],
+        );
+        let mut ext = HashMap::new();
+        // T=0 is 10 s into run a and 5 s into run b.
+        ext.insert(
+            "a".to_string(),
+            Ext {
+                keys: &keys,
+                series: &sa,
+                offset: 10.0,
+            },
+        );
+        ext.insert(
+            "b".to_string(),
+            Ext {
+                keys: &keys,
+                series: &sb,
+                offset: 5.0,
+            },
+        );
+        let sc = Scope {
+            keys: &[],
+            series: &[],
+            offset: 0.0,
+            ext: &ext,
+        };
+        let out = eval_parsed(&a, &sc).unwrap().unwrap();
+        assert_eq!(out.t, vec![0., 1., 2.]);
+        assert_eq!(out.v, vec![-9., -18., -27.]);
+        // Per run: run a minus baseline b, on a's clock.
+        let sc = Scope {
+            keys: &keys,
+            series: &sa,
+            offset: 10.0,
+            ext: &ext,
+        };
+        let out = eval("'x' - run('b', 'x')", &sc).unwrap().unwrap();
+        assert_eq!(out.t, vec![10., 11., 12.]);
+        assert_eq!(out.v, vec![-9., -18., -27.]);
+        assert!(eval("run('zzz', 'x')", &sc).is_err());
     }
 }

@@ -61,5 +61,7 @@ exclude = ["^python_", "^process_"]
 
 The header's dashboard menu saves the current charts, formulas, axis settings, T=0 and picked runs as a named dashboard in `<root>/.dashboards/`. Anyone using the same `serve` sees it, and `http://host:8737/?d=<name>` (the `link` button) opens it. Saves are versioned: if someone else saved the same dashboard since you loaded it, you're asked before overwriting.
 
+Custom charts (`ƒ custom`) take formulas such as `rate('tokens_total', 30) / 1e3` or `quantile(0.99, 'ttft_seconds', 60)`. `run('name', x)` reads `x` from another run on the shared T=0 axis: `run('lowlr', 'loss') - run('hotlr', 'loss')` draws one line, the difference, and `'loss' - run('baseline', 'loss')` draws each picked run minus the baseline. The name can be any part of a run's name that matches only one run.
+
 A dashboard also saves its chart notes (markdown under a chart title: click `✎` to write one, or the agent pins its conclusions there with `set_chart_note`) and the last 200 chat messages, so opening the link restores the conversation and you can carry on asking.
 
