@@ -4,7 +4,16 @@
 
 grafana for experiments · weights & biases for the poor · 100% /metrics
 
-Scrapes Prometheus `/metrics` endpoints into Parquet runs and serves a live UI to compare them.
+```bash
+nlv scrape --target trainer=http://localhost:8000/metrics   # scrape /metrics into runs/<timestamp>/*.parquet until Ctrl+C
+nlv serve                                                    # compare all runs live at http://127.0.0.1:8737
+```
+
+Get `nlv` (linux x86_64):
+
+```bash
+curl -L https://github.com/Aphoh/niu-lai-viz/releases/latest/download/nlv-x86_64-unknown-linux-gnu.tar.gz | tar xz
+```
 
 
 

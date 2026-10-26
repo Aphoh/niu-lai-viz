@@ -1865,7 +1865,7 @@ dependencies = [
 
 [[package]]
 name = "niu-lai-viz"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "arrow",
@@ -1891,7 +1891,7 @@ dependencies = [
 
 [[package]]
 name = "niu-lai-writer"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "arrow",
