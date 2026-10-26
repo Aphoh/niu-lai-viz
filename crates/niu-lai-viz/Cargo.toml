@@ -11,7 +11,7 @@ name = "niu_lai_viz"
 path = "src/lib.rs"
 
 [[bin]]
-name = "niu-lai-viz"
+name = "nlv"
 path = "src/main.rs"
 
 [dependencies]

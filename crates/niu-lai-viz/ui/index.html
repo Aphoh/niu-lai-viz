@@ -268,7 +268,7 @@ e.g.  rate('tokens_total', 30) / 1e3      'loss' / 'grad_norm'</pre>
     <label>base url <input id="llmurl" type="text" placeholder="https://openrouter.ai/api/v1"></label>
     <label>api key <input id="llmkey" type="password" placeholder="sk-..." autocomplete="off"></label>
     <label>model <input id="llmmodel" type="text" placeholder="z-ai/glm-5.3-flash"></label>
-    <small>saved in this browser's localStorage and sent straight from the browser to the base url, never to the niu-lai-viz server.</small>
+    <small>saved in this browser's localStorage and sent straight from the browser to the base url, never to the nlv server.</small>
   </div>
   <div id="chatlog" class="pit"></div>
   <form id="chatform"><textarea id="chatin" placeholder="moo? e.g. &quot;compare loss across lr, log scale&quot;  (enter sends, shift+enter newline)"></textarea><button id="chatsend">moo</button></form>
@@ -1030,7 +1030,7 @@ $("#amode").value = S.align.mode; $("#akey").value = S.align.key; $("#aval").val
 $("#xmode").value = S.xkey ? "metric" : "time"; $("#xkey").value = S.xkey;
 
 // ---------- niu lai chat: an LLM that drives the UI through tools ----------
-// Runs entirely in the browser: the key never touches the niu-lai-viz server.
+// Runs entirely in the browser: the key never touches the nlv server.
 let niuBusy = false;
 const LLM_DEFAULTS = { openai: { url: "https://openrouter.ai/api/v1", model: "z-ai/glm-5.3-flash" }, anthropic: { url: "https://api.anthropic.com/v1", model: "claude-sonnet-4-5" } };
 S.llm = ls("llm", { provider: "openai", url: LLM_DEFAULTS.openai.url, key: "", model: LLM_DEFAULTS.openai.model });
@@ -1266,7 +1266,7 @@ TOOL_BY.clear(); for (const t of TOOLS) TOOL_BY.set(t.name, t);
 function showNoRuns() {
   const el = $("#empty"); if (el.dataset.noruns) return; el.dataset.noruns = "1"; el.style.display = "";
   el.innerHTML = `<canvas class="niu" width="28" height="28"></canvas>no runs yet. scrape a job's /metrics into this folder:<br>
-<pre>niu-lai-viz scrape --root &lt;this serve's --root&gt; --run my-exp \\
+<pre>nlv scrape --root &lt;this serve's --root&gt; --run my-exp \\
   --target trainer=http://localhost:8000/metrics \\
   --label lr=3e-4</pre><small>runs appear here live · more in the README ("Scrape your own job") · or try examples/demo.py</small>`;
   drawNiu(el.querySelector("canvas"));

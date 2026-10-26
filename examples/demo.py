@@ -2,7 +2,7 @@
 """Spin up a zoo of fake jobs, scrape each into its own run, and serve the viewer.
 
 Some runs finish, one crashes (goes stale), the rest stay live until Ctrl+C.
-    python3 examples/demo.py --bin target/release/niu-lai-viz --root runs
+    python3 examples/demo.py --bin target/release/nlv --root runs
 """
 import argparse, os, signal, subprocess, sys, time
 from pathlib import Path
@@ -23,11 +23,11 @@ RUNS = [
 ]
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--bin", default="target/debug/niu-lai-viz")
+ap.add_argument("--bin", default="target/debug/nlv")
 ap.add_argument("--root", default="runs")
 ap.add_argument("--base-port", type=int, default=9101)
 ap.add_argument("--addr", default="127.0.0.1:8737", help="where the viewer listens")
-ap.add_argument("--no-serve", action="store_true", help="only scrape; run `niu-lai-viz serve` yourself")
+ap.add_argument("--no-serve", action="store_true", help="only scrape; run `nlv serve` yourself")
 a = ap.parse_args()
 cfg = Path(__file__).parent / "demo.toml"
 

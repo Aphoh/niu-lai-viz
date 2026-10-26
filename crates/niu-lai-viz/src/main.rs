@@ -12,12 +12,12 @@ use std::time::Duration;
 
 #[derive(Parser)]
 #[command(
-    name = "niu-lai-viz",
+    name = "nlv",
     version,
     about = "Pounds & Prejudice: a poor man's W&B over /metrics",
     after_help = "Typical use: one `scrape` per experiment, one `serve` for all of them:\n  \
-                  niu-lai-viz scrape --root runs --run my-exp --target trainer=http://localhost:8000/metrics --label lr=3e-4\n  \
-                  niu-lai-viz serve --root runs   # then open http://127.0.0.1:8737"
+                  nlv scrape --root runs --run my-exp --target trainer=http://localhost:8000/metrics --label lr=3e-4\n  \
+                  nlv serve --root runs   # then open http://127.0.0.1:8737"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -28,9 +28,9 @@ struct Cli {
 enum Cmd {
     /// Scrape /metrics endpoints into a new run until Ctrl+C / SIGTERM.
     #[command(after_help = "Examples:\n  \
-        niu-lai-viz scrape --run my-exp --target trainer=http://localhost:8000/metrics\n  \
-        niu-lai-viz scrape --run my-exp --target trainer=http://node1:8000/metrics --target gpus=http://node1:9400/metrics --label lr=3e-4 --label model=8b\n  \
-        niu-lai-viz scrape --config examples/dcgm.toml --run my-exp   # filters/renames per target\n\n\
+        nlv scrape --run my-exp --target trainer=http://localhost:8000/metrics\n  \
+        nlv scrape --run my-exp --target trainer=http://node1:8000/metrics --target gpus=http://node1:9400/metrics --label lr=3e-4 --label model=8b\n  \
+        nlv scrape --config examples/dcgm.toml --run my-exp   # filters/renames per target\n\n\
         The run lives in <root>/<run>/ (a -2, -3... suffix if taken) and is locked (flock on <run>/.lock) while scraping.\n\
         Ctrl+C or SIGTERM ends the run and compacts it into final.parquet.")]
     Scrape {
