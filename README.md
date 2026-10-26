@@ -8,7 +8,10 @@ Scrapes Prometheus `/metrics` endpoints into Parquet runs and serves a live UI t
 
 
 
-https://github.com/user-attachments/assets/162efd4e-8f4f-49e2-92f7-8108bd38138a
+
+https://github.com/user-attachments/assets/2e9a79c3-6050-41a2-9b4b-f420f44de536
+
+
 
 ## Screenshots
 
