@@ -27,13 +27,15 @@ ap.add_argument("--bin", default="target/debug/nlv")
 ap.add_argument("--root", default="runs")
 ap.add_argument("--base-port", type=int, default=9101)
 ap.add_argument("--addr", default="127.0.0.1:8737", help="where the viewer listens")
+ap.add_argument("--niu-lai", action="store_true", help="serve with the niu-lai look as the default")
 ap.add_argument("--no-serve", action="store_true", help="only scrape; run `nlv serve` yourself")
 a = ap.parse_args()
 cfg = Path(__file__).parent / "demo.toml"
 
 server = None
 if not a.no_serve:
-    server = subprocess.Popen([a.bin, "serve", "--root", a.root, "--addr", a.addr], stderr=subprocess.DEVNULL)
+    cmd = [a.bin, "serve", "--root", a.root, "--addr", a.addr] + (["--niu-lai"] if a.niu_lai else [])
+    server = subprocess.Popen(cmd, stderr=subprocess.DEVNULL)
 
 procs = []
 for i, (name, lr, seed, speed, life) in enumerate(RUNS):

@@ -67,6 +67,9 @@ enum Cmd {
         root: PathBuf,
         #[arg(long, default_value = "127.0.0.1:8737")]
         addr: String,
+        /// Open in the niu-lai look instead of the plain one (each browser can still toggle it).
+        #[arg(long)]
+        niu_lai: bool,
     },
 }
 
@@ -352,6 +355,10 @@ async fn main() -> AnyResult<()> {
             }
             Ok(())
         }
-        Cmd::Serve { root, addr } => Ok(niu_lai_viz::server::serve(root, &addr).await?),
+        Cmd::Serve {
+            root,
+            addr,
+            niu_lai,
+        } => Ok(niu_lai_viz::server::serve(root, &addr, niu_lai).await?),
     }
 }

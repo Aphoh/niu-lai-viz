@@ -1488,7 +1488,27 @@ async fn watch(app: Shared) {
     }
 }
 
-pub fn router(root: PathBuf) -> Router {
+/// The UI page with its default theme: plain, or the niu-lai look.
+fn index_page(niu_lai: bool) -> String {
+    if niu_lai {
+        INDEX.replacen(
+            "<html lang=\"en\">",
+            "<html lang=\"en\" data-theme=\"niu\">",
+            1,
+        )
+    } else {
+        INDEX
+            .replacen(
+                "<html lang=\"en\">",
+                "<html lang=\"en\" data-theme=\"plain\">",
+                1,
+            )
+            .replacen("<body>", "<body class=\"plain\">", 1)
+    }
+}
+
+pub fn router(root: PathBuf, niu_lai: bool) -> Router {
+    let page: &'static str = index_page(niu_lai).leak();
     let (tx, _) = broadcast::channel(4096);
     let app = Arc::new(App {
         root,
@@ -1498,7 +1518,7 @@ pub fn router(root: PathBuf) -> Router {
     });
     tokio::spawn(watch(app.clone()));
     Router::new()
-        .route("/", get(|| async { Html(INDEX) }))
+        .route("/", get(move || async move { Html(page) }))
         .route("/vendor/marked.js", get(|| async { js(MARKED_JS) }))
         .route("/vendor/purify.js", get(|| async { js(PURIFY_JS) }))
         .route("/api/runs", get(runs))
@@ -1516,7 +1536,7 @@ pub fn router(root: PathBuf) -> Router {
         .with_state(app)
 }
 
-pub async fn serve(root: PathBuf, addr: &str) -> anyhow::Result<()> {
+pub async fn serve(root: PathBuf, addr: &str, niu_lai: bool) -> anyhow::Result<()> {
     std::fs::create_dir_all(&root)?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     log::info!(
@@ -1524,6 +1544,6 @@ pub async fn serve(root: PathBuf, addr: &str) -> anyhow::Result<()> {
         root.display(),
         listener.local_addr()?
     );
-    axum::serve(listener, router(root)).await?;
+    axum::serve(listener, router(root, niu_lai)).await?;
     Ok(())
 }

@@ -41,6 +41,7 @@ target/release/nlv serve --root runs   # http://127.0.0.1:8737
 ```
 
 - `--target NAME=URL` is repeatable (e.g. trainer + DCGM on the same run). Series are keyed `NAME/metric{labels}`. Scrape every `--interval-ms` (default 1000).
+- The viewer opens in a plain theme; `nlv serve --niu-lai` makes the niu-lai look the default. Each browser can still flip it with the header's `niu-lai: on/off` button (remembered per browser) or `?theme=plain|niu` in the URL.
 - `--label KEY=VALUE` is repeatable: experiment parameters, shown under each run and filterable (`lr=3e-4`).
 - A taken `--run` name gets a `-2`, `-3`... suffix. While scraping, the run is flock'd (`runs/<run>/.lock`) so nothing else writes it. A killed scraper shows as `stale`; `nlv compact runs/<run>` finishes it.
 - `--config file.toml` adds per-target rules: `include`/`exclude` regexes, `strip_prefix`, `rename`, `drop_labels`, `label_columns`, run labels. See [`examples/dcgm.toml`](examples/dcgm.toml), [`examples/node-exporter.toml`](examples/node-exporter.toml), [`examples/demo.toml`](examples/demo.toml).

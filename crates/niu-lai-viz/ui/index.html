@@ -34,7 +34,7 @@ body.noside aside { display: none; }
 #ydlg form, #fdlg form { display: flex; flex-direction: column; gap: 8px; } #ydlg label { display: flex; justify-content: space-between; gap: 8px; align-items: center; } #fdlg label { display: flex; flex-direction: column; gap: 2px; }
 #ydlg h2 { word-break: break-all; } #ydlg input, #ydlg select { width: 160px; }
 #logoslot { width: 84px; height: 84px; flex: none; }
-#logo { width: 84px; height: 84px; position: fixed; left: 0; top: 0; z-index: 50; pointer-events: none; filter: drop-shadow(3px 3px 0 rgba(36,20,10,.6)); }
+#logo { width: 84px; height: 84px; position: fixed; left: 0; top: 0; z-index: 50; pointer-events: none; will-change: transform; filter: drop-shadow(3px 3px 0 rgba(36,20,10,.6)); }
 .brand { display: flex; flex-direction: column; gap: 14px; padding-right: 14px; }
 h1 { margin: 0; font: 900 40px/1 Impact, "Arial Black", sans-serif; letter-spacing: 2px; color: var(--snout);
   transform: skewX(-12deg) rotate(-2deg); transform-origin: left bottom;
@@ -142,7 +142,8 @@ body.chat-open #chat { display: flex; }
 .plainonly { display: none; } body.plain .plainonly { display: inline-block; } body.plain .niuonly { display: none !important; }
 body.plain { font: 13px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #202124; background: #f4f5f7; }
 body.plain canvas { image-rendering: auto; }
-body.plain #bg, body.plain #logo, body.plain #logoslot, body.plain .tag, body.plain #empty canvas { display: none; }
+body.plain #logoslot, body.plain #logo { width: 56px; height: 56px; } body.plain #logo { image-rendering: pixelated; filter: drop-shadow(0 1px 2px rgba(60,64,67,.35)); }
+body.plain #bg, body.plain .tag, body.plain #empty canvas { display: none; }
 body.plain .bevel { background: #fff; border: 1px solid #dadce0; border-radius: 8px; box-shadow: 0 1px 2px rgba(60,64,67,.08); }
 body.plain .pit { background: #fff; border: 1px solid #e3e5e8; border-radius: 6px; }
 body.plain button, body.plain input, body.plain select, body.plain textarea { font: inherit; color: #202124; background: #fff; border: 1px solid #c7cbd1; border-radius: 6px; padding: 3px 9px; }
@@ -319,24 +320,27 @@ function drawNiu(c, yaw = 0, nod = 0, pitch = 0) {
   P(3, PAL.snoutD, 11, 18, 13, 18, 13, 20, 11, 20); P(3, PAL.snoutD, 16, 18, 18, 18, 18, 20, 16, 20);
 }
 // The head sways left/right, nods, and floats: docked in the header, or drifting along the
-// top edge looking down at the charts while the header is hidden. ~10 fps on a 28px canvas.
+// top edge looking down at the charts while the header is hidden. Moves every frame at sub-pixel
+// positions (smooth); the 28px face itself is only redrawn when its pose changes.
 function animateNiu(c) {
   const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches, slot = $("#logoslot");
-  let x = 0, y = 0, last = "";
-  const tick = () => {
-    if (document.hidden) return;
-    const t = performance.now() / 1000, hidden = document.body.classList.contains("hdr-hidden"), r = slot.getBoundingClientRect();
+  let x = null, y = 0, last = "", prev = performance.now();
+  const tick = (now) => {
+    requestAnimationFrame(tick);
+    const dt = Math.min(0.1, (now - prev) / 1000); prev = now;
+    const t = now / 1000, hidden = document.body.classList.contains("hdr-hidden"), r = slot.getBoundingClientRect();
     const tx = hidden ? 60 + (innerWidth - 180) * (0.5 + 0.5 * Math.sin(t * 0.13)) : r.left, ty = hidden ? 4 + 3 * Math.sin(t * 0.9) : r.top;
-    x += (tx - x) * (reduce ? 1 : 0.12); y += (ty - y) * (reduce ? 1 : 0.2);
-    c.style.transform = `translate(${Math.round(x)}px,${Math.round(y)}px)`;
-    if (reduce) return drawNiu(c);
+    if (x === null || reduce) { x = tx; y = ty; }
+    else { x += (tx - x) * (1 - Math.exp(-dt * 1.3)); y += (ty - y) * (1 - Math.exp(-dt * 2.2)); }  // frame-rate independent easing
+    c.style.transform = `translate3d(${x.toFixed(2)}px,${y.toFixed(2)}px,0)`;
+    if (reduce) { if (!last) { last = "still"; drawNiu(c); } return; }
     const drift = hidden ? Math.cos(t * 0.13) * 0.5 : 0;  // face the way it is floating
     const yaw = Math.max(-1, Math.min(1, 0.7 * Math.sin(t * 0.55) + 0.25 * Math.sin(t * 1.7) + drift));
     const nod = Math.round((1 - Math.cos(t * (niuBusy ? 9 : 2.2))) * 0.8), pitch = hidden ? 1.2 : 0.4 + 0.3 * Math.sin(t * 0.4);
     const key = Math.round(yaw * 10) + ":" + nod + ":" + Math.round(pitch * 4);
     if (key !== last) { last = key; drawNiu(c, yaw, nod, pitch); }
   };
-  setInterval(tick, 100); tick();
+  requestAnimationFrame(tick);
 }
 
 // ---------- state ----------
@@ -362,6 +366,8 @@ function rgba(css) {
     v = new Uint32Array(new Uint8ClampedArray([p[0], p[1], p[2], 255]).buffer)[0]; rgbaCache.set(css, v); }
   return v;
 }
+// Default look, set by the server: plain, or niu with `nlv serve --niu-lai`.
+const DEF_THEME = document.documentElement.dataset.theme || "plain";
 // Canvas look per theme. Chart coordinates are in logical px (PX CSS px each); canvases render RES device-ish px per logical px.
 const THEMES = {
   niu: { res: () => 2, line: () => 1, margin: "#f6e7a6", text: PAL.barkD, ink: PAL.ink, inkText: PAL.furL, sky: PAL.sky, grid: "#6f9aa3", dash: [4, 2], frozen: "#ff00ff",
@@ -379,7 +385,7 @@ function heatLut(stops) { const lut = new Uint32Array(256), h = (c) => [1, 3, 5]
   for (let i = 0; i < 256; i++) { const t = i / 255 * (stops.length - 1), k = Math.min(stops.length - 2, Math.floor(t)), a = h(stops[k]), b = h(stops[k + 1]), f = t - k;
     lut[i] = rgba(`rgb(${a.map((v, j) => Math.round(v + (b[j] - v) * f)).join(",")})`); } return lut; }
 function setCanvasTheme(name) { T = THEMES[name] || THEMES.niu; RES = T.res(); LINE = T.line(); SKY = rgba(T.sky); GRID = rgba(T.grid); PAPER32 = rgba(T.margin); HCOL = heatLut(T.heat); HQ = T.hq; }
-setCanvasTheme(new URLSearchParams(location.search).get("theme") || localStorage.getItem("niu.theme") || "niu");
+setCanvasTheme(new URLSearchParams(location.search).get("theme") || localStorage.getItem("niu.theme") || DEF_THEME);
 const api = (path, body, signal) => fetch(path, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal } : { signal });
 const debounce = (f, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => f(...a), ms); }; };
 // Long run names: cut the middle so the distinctive prefix and suffix (seed, node, date) both stay.
@@ -1276,7 +1282,7 @@ function showNoRuns() {
   --label lr=3e-4</pre><small>runs appear here live · more in the README ("Scrape your own job") · or try examples/demo.py</small>`;
   drawNiu(el.querySelector("canvas"));
 }
-// niu-lai on/off. ?theme=plain|niu in the URL wins, then this browser's last choice.
+// niu-lai on/off. ?theme=plain|niu in the URL wins, then this browser's last choice, then the server default.
 function applyTheme(name) {
   const plain = name === "plain"; document.body.classList.toggle("plain", plain); setCanvasTheme(plain ? "plain" : "niu");
   $("#themetog").textContent = plain ? "niu-lai: off" : "niu-lai: on";
@@ -1286,7 +1292,7 @@ function applyTheme(name) {
   for (const v of VLISTS) v.schedule(true);
   if (charts.size) pump();
 }
-let theme = new URLSearchParams(location.search).get("theme") || localStorage.getItem("niu.theme") || "niu";
+let theme = new URLSearchParams(location.search).get("theme") || localStorage.getItem("niu.theme") || DEF_THEME;
 $("#themetog").onclick = () => { theme = theme === "plain" ? "niu" : "plain"; localStorage.setItem("niu.theme", theme); applyTheme(theme); };
 $("#askbtn").onclick = () => openChat(!document.body.classList.contains("chat-open"));
 applyTheme(theme);
