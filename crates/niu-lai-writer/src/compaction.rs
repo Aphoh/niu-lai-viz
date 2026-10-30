@@ -242,6 +242,122 @@ fn compact_with_polars(
     Ok(total_rows)
 }
 
+/// Concatenate compacted Parquet files into `output` by copying their row
+/// groups' bytes verbatim: no decoding or sorting, so cost is disk I/O and
+/// memory stays flat. Returns `None` (writing nothing) if schemas differ.
+fn concat_parquet(inputs: &[std::path::PathBuf], output: &Path) -> Result<Option<usize>> {
+    use parquet::column::writer::ColumnCloseResult;
+    use parquet::file::metadata::ParquetMetaDataReader;
+    use parquet::file::properties::WriterProperties;
+    use parquet::file::writer::SerializedFileWriter;
+    let pq = |e: parquet::errors::ParquetError| crate::NoMoreError::Parquet(e.to_string());
+
+    let inputs = inputs
+        .iter()
+        .map(|p| {
+            let f = File::open(p)?;
+            let m = ParquetMetaDataReader::new()
+                .parse_and_finish(&f)
+                .map_err(pq)?;
+            Ok((f, m))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let Some((_, first)) = inputs.first() else {
+        return Ok(None);
+    };
+    let schema = first.file_metadata().schema_descr();
+    if inputs
+        .iter()
+        .any(|(_, m)| m.file_metadata().schema() != first.file_metadata().schema())
+    {
+        return Ok(None);
+    }
+    // Keep ARROW:schema etc. so readers restore the same Arrow types.
+    let props = WriterProperties::builder()
+        .set_key_value_metadata(first.file_metadata().key_value_metadata().cloned())
+        .build();
+
+    let file_name = output
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let temp_output = output.with_file_name(format!(".{file_name}.tmp"));
+    let mut writer = SerializedFileWriter::new(
+        File::create(&temp_output)?,
+        schema.root_schema_ptr(),
+        Arc::new(props),
+    )
+    .map_err(pq)?;
+    let mut rows = 0;
+    for (input, meta) in &inputs {
+        for rg in meta.row_groups() {
+            let mut out = writer.next_row_group().map_err(pq)?;
+            for column in rg.columns() {
+                out.append_column(
+                    input,
+                    ColumnCloseResult {
+                        bytes_written: column.compressed_size() as _,
+                        rows_written: rg.num_rows() as _,
+                        metadata: column.clone(),
+                        bloom_filter: None,
+                        column_index: None,
+                        offset_index: None,
+                    },
+                )
+                .map_err(pq)?;
+            }
+            out.close().map_err(pq)?;
+            rows += rg.num_rows() as usize;
+        }
+    }
+    writer.close().map_err(pq)?;
+    std::fs::rename(&temp_output, output)?;
+    Ok(Some(rows))
+}
+
+/// Compact `paths` (+ `arrow_path`) into `output` without re-sorting data that
+/// an earlier pass already compacted: only the new data is sorted, then its
+/// row groups are appended after the old ones. Each row group stays sorted by
+/// (metric_name, time_since_start), so a pass costs O(new data) in CPU and
+/// memory instead of O(whole run).
+fn compact_incremental(
+    paths: &[std::path::PathBuf],
+    arrow_path: Option<&Path>,
+    output: &Path,
+) -> Result<usize> {
+    let is_compacted = |p: &std::path::PathBuf| {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("incomplete-"))
+            && parquet_has_metric_name_clean(p)
+    };
+    let (mut parts, fresh): (Vec<_>, Vec<_>) = paths.iter().cloned().partition(is_compacted);
+    if parts.is_empty() {
+        return compact_with_polars(paths, arrow_path, output);
+    }
+    let file_name = output
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let fresh_out = output.with_file_name(format!(".{file_name}.fresh.parquet"));
+    if !fresh.is_empty() || arrow_path.is_some() {
+        compact_with_polars(&fresh, arrow_path, &fresh_out)?;
+        parts.push(fresh_out.clone());
+    }
+    let res = concat_parquet(&parts, output);
+    let _ = std::fs::remove_file(&fresh_out);
+    match res? {
+        Some(rows) => {
+            info!("Appended to {} ({} rows)", output.display(), rows);
+            Ok(rows)
+        }
+        None => {
+            warn!("Schema changed between compactions; rewriting the whole run");
+            compact_with_polars(paths, arrow_path, output)
+        }
+    }
+}
+
 /// Compact current out-*.parquet files into incomplete-N.parquet and upload to remote storage.
 /// This is for periodic syncs during long-running jobs to provide durability.
 ///
@@ -376,7 +492,7 @@ pub async fn periodic_compact_and_sync(
     // Use Polars-based compaction (with sorting and metric_name_clean)
     // This ensures incomplete files are queryable with the same efficiency as final.parquet
     let local_incomplete_path = local_dir.join(&incomplete_filename);
-    let total_rows = compact_with_polars(&parquet_paths, None, &local_incomplete_path)?;
+    let total_rows = compact_incremental(&parquet_paths, None, &local_incomplete_path)?;
     info!(
         "Wrote {} locally with {} rows",
         incomplete_filename, total_rows
@@ -546,7 +662,7 @@ pub async fn compact_and_upload(
 
     // Use Polars for fast parallel sort and compaction
     let local_final_path = local_dir.join("final.parquet");
-    let total_rows = compact_with_polars(&parquet_paths, arrow_path.as_deref(), &local_final_path)?;
+    let total_rows = compact_incremental(&parquet_paths, arrow_path.as_deref(), &local_final_path)?;
     info!("Wrote final.parquet locally with {} rows", total_rows);
 
     // Upload final.parquet to remote storage
@@ -645,4 +761,68 @@ async fn upload_file_to_remote(
         .map_err(|e| crate::NoMoreError::S3(format!("Failed to upload {}: {}", filename, e)))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn segment(path: &Path, t0: f64, n: usize) {
+        let names: Vec<String> = (0..n)
+            .map(|i| format!("m{}{{a=\"{}\"}}", i % 3, i % 2))
+            .collect();
+        let ts: Vec<f64> = (0..n).map(|i| t0 + i as f64).collect();
+        let mut df = df!(
+            "metric_name" => names,
+            "metric_value" => ts.clone(),
+            "time_since_start" => ts,
+        )
+        .unwrap();
+        ParquetWriter::new(File::create(path).unwrap())
+            .finish(&mut df)
+            .unwrap();
+    }
+
+    fn groups(path: &Path) -> usize {
+        let f = File::open(path).unwrap();
+        parquet::file::metadata::ParquetMetaDataReader::new()
+            .parse_and_finish(&f)
+            .unwrap()
+            .num_row_groups()
+    }
+
+    #[test]
+    fn incremental_compaction_appends_without_resorting() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        segment(&d.join("out-0.parquet"), 0.0, 30);
+        let first = d.join("incomplete-1.parquet");
+        assert_eq!(
+            compact_incremental(&[d.join("out-0.parquet")], None, &first).unwrap(),
+            30
+        );
+
+        segment(&d.join("out-1.parquet"), 30.0, 12);
+        let second = d.join("incomplete-2.parquet");
+        let rows = compact_incremental(&[first.clone(), d.join("out-1.parquet")], None, &second);
+        assert_eq!(rows.unwrap(), 42);
+        // Old row groups copied verbatim, new data appended after them.
+        assert!(groups(&second) > groups(&first));
+
+        let df = LazyFrame::scan_parquet(&second, Default::default())
+            .unwrap()
+            .collect()
+            .unwrap();
+        assert_eq!(df.height(), 42);
+        assert!(df.column("metric_name_clean").is_ok());
+        let ts = df.column("time_since_start").unwrap().f64().unwrap();
+        let mut seen: Vec<f64> = ts.into_no_null_iter().collect();
+        seen.sort_by(f64::total_cmp);
+        assert_eq!(seen, (0..42).map(|i| i as f64).collect::<Vec<_>>());
+        assert!(!d
+            .read_dir()
+            .unwrap()
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy().starts_with('.')));
+    }
 }
