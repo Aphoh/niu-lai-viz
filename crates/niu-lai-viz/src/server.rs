@@ -83,6 +83,11 @@ enum Plan {
     /// Compaction is mid-flight (output written, sources not yet deleted):
     /// keep serving what we have.
     Wait,
+    /// Merged output sits beside the sources it duplicates (e.g. while it
+    /// uploads): append only the listed new segments and keep ignoring the
+    /// merged file until its sources are gone. Never times out into a rebuild,
+    /// which would count those rows twice.
+    Hold(Vec<usize>),
     Rebuild,
 }
 
@@ -122,7 +127,7 @@ fn plan(old: &[FileInfo], cur: &[FileInfo]) -> Plan {
         // Nothing we hold is still on disk, so nothing is pending deletion.
         Plan::Rebuild
     } else if merged_rows > gone_rows {
-        Plan::Wait
+        Plan::Hold(fresh)
     } else {
         Plan::Rebuild
     }
@@ -448,6 +453,17 @@ fn refresh(
     *waiting = None;
     match p {
         Plan::Same | Plan::Wait => {}
+        Plan::Hold(fresh) => {
+            if !fresh.is_empty() {
+                let new: Vec<FileInfo> = fresh.iter().map(|&i| cur[i].clone()).collect();
+                let mut chunks = Vec::new();
+                read_files(&new, |c| chunks.push(c))?;
+                let mut d = data.write().unwrap();
+                d.absorb_chunks(chunks);
+                d.files = old.into_iter().chain(new).collect();
+            }
+            return Ok(false);
+        }
         Plan::Append(fresh) | Plan::Swap(fresh) => {
             let new: Vec<FileInfo> = fresh.iter().map(|&i| cur[i].clone()).collect();
             let mut chunks = Vec::new();
@@ -1997,11 +2013,11 @@ mod tests {
         write(&seg.join("incomplete-0.parquet"), 50, 0, 20);
         touch(&app);
         assert_eq!(total(&app), (50, 1000));
-        // Sources deleted one at a time, a new segment arriving meanwhile.
+        // Sources deleted one at a time; a new segment arriving meanwhile shows up.
         std::fs::remove_file(seg.join("out-0.parquet")).unwrap();
         write(&seg.join("out-2.parquet"), 50, 20, 10);
         touch(&app);
-        assert_eq!(total(&app), (50, 1000));
+        assert_eq!(total(&app), (50, 1500));
         std::fs::remove_file(seg.join("out-1.parquet")).unwrap();
         touch(&app);
         assert_eq!(total(&app), (50, 1500));
@@ -2056,9 +2072,9 @@ mod tests {
         cur.push(f("out-2.parquet", 5));
         assert_eq!(plan(&old, &cur), Plan::Append(vec![2]));
         cur.insert(0, f("incomplete-0.parquet", 10));
-        assert_eq!(plan(&old, &cur), Plan::Wait);
+        assert_eq!(plan(&old, &cur), Plan::Hold(vec![3]));
         cur.remove(1);
-        assert_eq!(plan(&old, &cur), Plan::Wait);
+        assert_eq!(plan(&old, &cur), Plan::Hold(vec![2]));
         cur.remove(1);
         assert_eq!(plan(&old, &cur), Plan::Swap(vec![1]));
         // Rows lost without a merged replacement: wait (then `MAX_WAIT` reloads).
@@ -2068,6 +2084,35 @@ mod tests {
         // Merged output with extra rows and nothing left to delete: reload.
         let cur = vec![f("final.parquet", 12)];
         assert_eq!(plan(&old, &cur), Plan::Rebuild);
+    }
+
+    #[test]
+    fn row_group_spanning_several_batches_loads() {
+        let (root, app) = setup();
+        write(&root.path().join("r/final.parquet"), 2, 0, 100_000);
+        assert_eq!(total(&app), (2, 200_000));
+    }
+
+    #[test]
+    fn slow_upload_never_double_counts() {
+        let (root, app) = setup();
+        let seg = root.path().join("r/segments");
+        write(&seg.join("out-0.parquet"), 50, 0, 10);
+        write(&seg.join("out-1.parquet"), 50, 10, 10);
+        assert_eq!(total(&app), (50, 1000));
+        // Merged file written; sources stay until its upload finishes, well past `MAX_WAIT`.
+        write(&seg.join("incomplete-0.parquet"), 50, 0, 20);
+        let data = app.run("r").unwrap();
+        let mut waiting = Some(std::time::Instant::now() - 2 * MAX_WAIT);
+        for _ in 0..3 {
+            assert!(!refresh(&data, &root.path().join("r"), &mut waiting).unwrap());
+            assert_eq!(total(&app), (50, 1000));
+        }
+        for f in ["out-0.parquet", "out-1.parquet"] {
+            std::fs::remove_file(seg.join(f)).unwrap();
+        }
+        assert!(refresh(&data, &root.path().join("r"), &mut waiting).unwrap());
+        assert_eq!(total(&app), (50, 1000));
     }
 
     #[test]
