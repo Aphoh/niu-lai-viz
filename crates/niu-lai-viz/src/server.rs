@@ -4,7 +4,7 @@
 //! run (T=0 anchor or a metric as x-axis), smooths, and min/max-decimates per
 //! pixel column, so response size and draw cost are bounded by chart width
 //! times run count, never by run length. Responses are packed f32 arrays.
-use crate::run::{data_files, is_locked, now_ms, RunMeta, META_FILE};
+use crate::run::{data_files, final_files, is_locked, now_ms, segment_files, RunMeta, META_FILE};
 use arrow::array::{Array, AsArray, Float64Array, StringArray};
 use arrow::datatypes::{DataType, Float64Type};
 use axum::body::Bytes;
@@ -14,7 +14,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ParquetRecordBatchReaderBuilder};
 use rayon::prelude::*;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -47,15 +47,289 @@ pub struct Series {
     pub v: Vec<f32>,
 }
 
+/// A data file as loaded. Row counts come from the Parquet footer and let a
+/// compacted file stand in for the segments it replaced without re-reading.
+#[derive(Clone, Debug)]
+struct FileInfo {
+    path: PathBuf,
+    len: u64,
+    rows: u64,
+    groups: usize,
+}
+
+impl FileInfo {
+    fn same(&self, o: &FileInfo) -> bool {
+        self.path == o.path && self.len == o.len
+    }
+
+    /// Compaction output: replaces the segments it was merged from.
+    fn merged(&self) -> bool {
+        self.path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("incomplete-") || n == crate::run::FINAL_FILE)
+    }
+}
+
+/// How to bring loaded data in line with the files now on disk.
+#[derive(Debug, PartialEq)]
+enum Plan {
+    Same,
+    /// Read these new segments and append them.
+    Append(Vec<usize>),
+    /// Compaction merged files we hold into new ones with the same rows:
+    /// adopt the new file list, then append the listed new segments.
+    Swap(Vec<usize>),
+    /// Compaction is mid-flight (output written, sources not yet deleted):
+    /// keep serving what we have.
+    Wait,
+    /// Merged output sits beside the sources it duplicates (e.g. while it
+    /// uploads): append only the listed new segments and keep ignoring the
+    /// merged file until its sources are gone. Never times out into a rebuild,
+    /// which would count those rows twice.
+    Hold(Vec<usize>),
+    Rebuild,
+}
+
+/// Indices are into `cur`.
+fn plan(old: &[FileInfo], cur: &[FileInfo]) -> Plan {
+    if old.is_empty() {
+        return if cur.is_empty() {
+            Plan::Same
+        } else {
+            Plan::Rebuild
+        };
+    }
+    let gone: Vec<&FileInfo> = old
+        .iter()
+        .filter(|f| !cur.iter().any(|c| c.same(f)))
+        .collect();
+    let added: Vec<usize> = (0..cur.len())
+        .filter(|&i| !old.iter().any(|o| o.same(&cur[i])))
+        .collect();
+    let (merged, fresh): (Vec<usize>, Vec<usize>) = added.iter().partition(|&&i| cur[i].merged());
+    if gone.is_empty() && merged.is_empty() {
+        return if fresh.is_empty() {
+            Plan::Same
+        } else {
+            Plan::Append(fresh)
+        };
+    }
+    let gone_rows: u64 = gone.iter().map(|f| f.rows).sum();
+    let merged_rows: u64 = merged.iter().map(|&i| cur[i].rows).sum();
+    let rows = |fs: &[FileInfo]| fs.iter().map(|f| f.rows).sum::<u64>();
+    if !gone.is_empty() && merged_rows == gone_rows {
+        Plan::Swap(fresh)
+    } else if rows(cur) < rows(old) {
+        // Files vanished without a replacement yet: never drop data on a guess.
+        Plan::Wait
+    } else if added.len() == cur.len() {
+        // Nothing we hold is still on disk, so nothing is pending deletion.
+        Plan::Rebuild
+    } else if merged_rows > gone_rows {
+        Plan::Hold(fresh)
+    } else {
+        Plan::Rebuild
+    }
+}
+
+/// How long `Plan::Wait` may last before rebuilding from whatever is on disk.
+const MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The run's data files with sizes and footers; reuses `old` for unchanged
+/// files. Files that vanish or have no valid footer yet are skipped.
+/// A final.parquet still being written (by scrapers before atomic compaction
+/// output) is passed over in favour of the segments it will replace.
+fn list_files(run_dir: &Path, old: &[FileInfo]) -> Vec<FileInfo> {
+    let info = |path: PathBuf| -> Option<FileInfo> {
+        let len = std::fs::metadata(&path).ok()?.len();
+        if let Some(o) = old.iter().find(|o| o.path == path && o.len == len) {
+            return Some(o.clone());
+        }
+        let file = std::fs::File::open(&path).ok()?;
+        let meta = ArrowReaderMetadata::load(&file, Default::default()).ok()?;
+        let m = meta.metadata();
+        Some(FileInfo {
+            path,
+            len,
+            rows: m.file_metadata().num_rows().max(0) as u64,
+            groups: m.num_row_groups(),
+        })
+    };
+    if let Some(f) = final_files(run_dir).into_iter().find_map(info) {
+        return vec![f];
+    }
+    segment_files(run_dir)
+        .into_iter()
+        .filter_map(info)
+        .collect()
+}
+
+/// Series parsed from part of a file, in first-seen key order.
+#[derive(Default)]
+struct Chunk {
+    keys: Vec<String>,
+    series: Vec<Series>,
+}
+
+/// Parse every row group of `files` on scoped OS threads (not rayon: callers
+/// hold a run's refresh lock, and a rayon wait could steal a job that needs it).
+/// Chunks are handed to `sink` in file/row-group order as they finish, so only
+/// a few parsed chunks exist beside the data they are merged into.
+fn read_files(files: &[FileInfo], mut sink: impl FnMut(Chunk)) -> anyhow::Result<()> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let tasks: Vec<(&Path, usize)> = files
+        .iter()
+        .flat_map(|f| (0..f.groups).map(move |g| (f.path.as_path(), g)))
+        .collect();
+    let next = AtomicUsize::new(0);
+    let threads = std::thread::available_parallelism()
+        .map_or(4, |n| n.get())
+        .min(tasks.len());
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::scope(|s| {
+        for _ in 0..threads {
+            let tx = tx.clone();
+            let (tasks, next) = (&tasks, &next);
+            s.spawn(move || loop {
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                let Some(&(path, group)) = tasks.get(i) else {
+                    break;
+                };
+                if tx.send((i, read_group(path, group))).is_err() {
+                    break;
+                }
+            });
+        }
+        drop(tx);
+        let mut pending = BTreeMap::new();
+        let mut want = 0;
+        for (i, chunk) in rx {
+            pending.insert(i, chunk);
+            while let Some(chunk) = pending.remove(&want) {
+                want += 1;
+                match chunk {
+                    Ok(c) => sink(c),
+                    Err(e) => {
+                        next.store(usize::MAX / 2, Ordering::Relaxed);
+                        return Err(e);
+                    }
+                }
+            }
+        }
+        Ok(())
+    })
+}
+
+fn label(a: &StringArray, i: usize) -> Option<&str> {
+    a.is_valid(i).then(|| a.value(i))
+}
+
+fn read_group(path: &Path, group: usize) -> anyhow::Result<Chunk> {
+    let reader = ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(path)?)?
+        .with_row_groups(vec![group])
+        .with_batch_size(65536)
+        .build()?;
+    let mut chunk = Chunk::default();
+    let mut index: HashMap<String, usize> = HashMap::new();
+    let mut key = String::with_capacity(256);
+    for batch in reader {
+        let batch = batch?;
+        let schema = batch.schema();
+        let utf8 = |name: &str| -> anyhow::Result<StringArray> {
+            let col = batch
+                .column_by_name(name)
+                .ok_or_else(|| anyhow::anyhow!("{} lacks {name}", path.display()))?;
+            Ok(arrow::compute::cast(col, &DataType::Utf8)?
+                .as_string::<i32>()
+                .clone())
+        };
+        let f64s = |name: &str| -> anyhow::Result<Float64Array> {
+            let col = batch
+                .column_by_name(name)
+                .ok_or_else(|| anyhow::anyhow!("{} lacks {name}", path.display()))?;
+            Ok(arrow::compute::cast(col, &DataType::Float64)?
+                .as_primitive::<Float64Type>()
+                .clone())
+        };
+        let (ep, name, value, t) = (
+            utf8("scraper_endpoint")?,
+            utf8("metric_name")?,
+            f64s("metric_value")?,
+            f64s("time_since_start")?,
+        );
+        let extras: Vec<(String, StringArray)> = schema
+            .fields()
+            .iter()
+            .filter(|f| !FIXED_COLUMNS.contains(&f.name().as_str()))
+            .map(|f| Ok((f.name().clone(), utf8(f.name())?)))
+            .collect::<anyhow::Result<_>>()?;
+        let mut last: Option<usize> = None;
+        for i in 0..batch.num_rows() {
+            // Compacted files are sorted by metric, so consecutive rows usually
+            // share a series: compare the raw columns before building a key.
+            let same = last.is_some()
+                && ep.value(i) == ep.value(i - 1)
+                && name.value(i) == name.value(i - 1)
+                && extras.iter().all(|(_, a)| label(a, i) == label(a, i - 1));
+            let idx = match last.filter(|_| same) {
+                Some(l) => l,
+                None => {
+                    key.clear();
+                    key.push_str(ep.value(i));
+                    key.push('/');
+                    key.push_str(name.value(i));
+                    let mut first = true;
+                    for (n, a) in &extras {
+                        if let Some(v) = label(a, i).filter(|v| !v.is_empty()) {
+                            key.push_str(if first { " [" } else { "," });
+                            first = false;
+                            key.push_str(n);
+                            key.push('=');
+                            key.push_str(v);
+                        }
+                    }
+                    if !first {
+                        key.push(']');
+                    }
+                    match index.get(key.as_str()) {
+                        Some(&l) => l,
+                        None => {
+                            let l = chunk.series.len();
+                            index.insert(key.clone(), l);
+                            chunk.keys.push(key.clone());
+                            chunk.series.push(Series::default());
+                            l
+                        }
+                    }
+                }
+            };
+            last = Some(idx);
+            let s = &mut chunk.series[idx];
+            s.t.push(t.value(i) as f32);
+            s.v.push(value.value(i) as f32);
+        }
+    }
+    Ok(chunk)
+}
+
+/// Bumped whenever any run's key list may have changed (see `RunData::gen`).
+static KEY_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn next_gen() -> u64 {
+    KEY_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// All series of one run, keyed `endpoint/metric_name [col=val,...]`.
-/// Segments are append-only, so only new files are read on refresh.
 #[derive(Default)]
 pub struct RunData {
-    files: Vec<(PathBuf, u64)>,
+    files: Vec<FileInfo>,
     index: HashMap<String, usize>,
     pub keys: Vec<String>,
     pub series: Vec<Series>,
-    anchors: HashMap<String, Option<f64>>,
+    anchors: Mutex<HashMap<String, Option<f64>>>,
+    /// Changes whenever `keys` may have; clients skip refetching key lists otherwise.
+    gen: u64,
 }
 
 impl RunData {
@@ -63,25 +337,50 @@ impl RunData {
         self.index.get(key).map(|&i| &self.series[i])
     }
 
-    pub fn refresh(&mut self, run_dir: &Path) -> anyhow::Result<()> {
-        let files: Vec<(PathBuf, u64)> = data_files(run_dir)
-            .into_iter()
-            .filter_map(|p| Some((p.clone(), std::fs::metadata(&p).ok()?.len())))
-            .collect();
-        let n = self.files.len();
-        if files.len() < n || files[..n] != self.files[..] {
-            *self = RunData::default();
-        }
-        if files.len() == self.files.len() {
-            return Ok(());
-        }
+    /// Read `files` into the series as they parse.
+    fn absorb(&mut self, files: &[FileInfo]) -> anyhow::Result<()> {
+        let before = self.keys.len();
         let mut touched = HashSet::new();
-        for (p, _) in &files[self.files.len()..] {
-            if let Err(e) = self.read_file(p, &mut touched) {
-                *self = RunData::default();
-                return Err(e);
-            }
+        read_files(files, |c| self.merge(c, &mut touched))?;
+        self.finish(before, touched);
+        Ok(())
+    }
+
+    fn absorb_chunks(&mut self, chunks: Vec<Chunk>) {
+        let before = self.keys.len();
+        let mut touched = HashSet::new();
+        for c in chunks {
+            self.merge(c, &mut touched);
         }
+        self.finish(before, touched);
+    }
+
+    fn merge(&mut self, c: Chunk, touched: &mut HashSet<usize>) {
+        for (k, s) in c.keys.into_iter().zip(c.series) {
+            let i = match self.index.get(&k) {
+                Some(&i) => i,
+                None => {
+                    let i = self.series.len();
+                    self.index.insert(k.clone(), i);
+                    self.keys.push(k);
+                    self.series.push(Series::default());
+                    i
+                }
+            };
+            let d = &mut self.series[i];
+            if d.t.is_empty() {
+                *d = s;
+            } else {
+                d.t.extend(s.t);
+                d.v.extend(s.v);
+            }
+            touched.insert(i);
+        }
+    }
+
+    /// Restore time order in merged series and drop their growth slack
+    /// (thousands of series otherwise hold ~2x their data).
+    fn finish(&mut self, keys_before: usize, touched: HashSet<usize>) {
         for i in touched {
             let s = &mut self.series[i];
             if !s.t.windows(2).all(|w| w[0] <= w[1]) {
@@ -90,98 +389,29 @@ impl RunData {
                 s.t = idx.iter().map(|&i| s.t[i]).collect();
                 s.v = idx.iter().map(|&i| s.v[i]).collect();
             }
+            s.t.shrink_to_fit();
+            s.v.shrink_to_fit();
         }
-        self.anchors.clear();
-        self.files = files;
-        Ok(())
+        if self.keys.len() != keys_before || self.gen == 0 {
+            self.gen = next_gen();
+        }
+        self.anchors.lock().unwrap().clear();
     }
 
-    fn read_file(&mut self, path: &Path, touched: &mut HashSet<usize>) -> anyhow::Result<()> {
-        let reader = ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(path)?)?
-            .with_batch_size(65536)
-            .build()?;
-        let mut key = String::with_capacity(256);
-        for batch in reader {
-            let batch = batch?;
-            let schema = batch.schema();
-            let utf8 = |name: &str| -> anyhow::Result<StringArray> {
-                let col = batch
-                    .column_by_name(name)
-                    .ok_or_else(|| anyhow::anyhow!("{} lacks {name}", path.display()))?;
-                Ok(arrow::compute::cast(col, &DataType::Utf8)?
-                    .as_string::<i32>()
-                    .clone())
-            };
-            let f64s = |name: &str| -> anyhow::Result<Float64Array> {
-                let col = batch
-                    .column_by_name(name)
-                    .ok_or_else(|| anyhow::anyhow!("{} lacks {name}", path.display()))?;
-                Ok(arrow::compute::cast(col, &DataType::Float64)?
-                    .as_primitive::<Float64Type>()
-                    .clone())
-            };
-            let (ep, name, value, t) = (
-                utf8("scraper_endpoint")?,
-                utf8("metric_name")?,
-                f64s("metric_value")?,
-                f64s("time_since_start")?,
-            );
-            let extras: Vec<(String, StringArray)> = schema
-                .fields()
-                .iter()
-                .filter(|f| !FIXED_COLUMNS.contains(&f.name().as_str()))
-                .map(|f| Ok((f.name().clone(), utf8(f.name())?)))
-                .collect::<anyhow::Result<_>>()?;
-            let mut last: Option<usize> = None;
-            for i in 0..batch.num_rows() {
-                key.clear();
-                key.push_str(ep.value(i));
-                key.push('/');
-                key.push_str(name.value(i));
-                let mut first = true;
-                for (n, a) in &extras {
-                    if a.is_valid(i) && !a.value(i).is_empty() {
-                        key.push_str(if first { " [" } else { "," });
-                        first = false;
-                        key.push_str(n);
-                        key.push('=');
-                        key.push_str(a.value(i));
-                    }
-                }
-                if !first {
-                    key.push(']');
-                }
-                // final.parquet is sorted by metric, so consecutive rows usually share a series.
-                let idx = match last.filter(|&l| self.keys[l] == key) {
-                    Some(l) => l,
-                    None => match self.index.get(key.as_str()) {
-                        Some(&l) => l,
-                        None => {
-                            let l = self.series.len();
-                            self.index.insert(key.clone(), l);
-                            self.keys.push(key.clone());
-                            self.series.push(Series::default());
-                            l
-                        }
-                    },
-                };
-                if last != Some(idx) {
-                    touched.insert(idx);
-                    last = Some(idx);
-                }
-                let s = &mut self.series[idx];
-                s.t.push(t.value(i) as f32);
-                s.v.push(value.value(i) as f32);
-            }
-        }
-        Ok(())
+    /// Load `run_dir` from scratch (tests and one-off tools).
+    pub fn load(run_dir: &Path) -> anyhow::Result<RunData> {
+        let files = list_files(run_dir, &[]);
+        let mut d = RunData::default();
+        d.absorb(&files)?;
+        d.files = files;
+        Ok(d)
     }
 
     /// Time of the anchor event: first sample of any series matching `re`,
     /// or the first one whose value exceeds `above`.
-    fn anchor(&mut self, spec: &Align, re: &Regex) -> Option<f64> {
+    fn anchor(&self, spec: &Align, re: &Regex) -> Option<f64> {
         let id = format!("{}\u{0}{:?}", spec.key, spec.above);
-        if let Some(v) = self.anchors.get(&id) {
+        if let Some(v) = self.anchors.lock().unwrap().get(&id) {
             return *v;
         }
         let mut best: Option<f64> = None;
@@ -197,36 +427,154 @@ impl RunData {
                 best = Some(best.map_or(h as f64, |b: f64| b.min(h as f64)));
             }
         }
-        self.anchors.insert(id, best);
+        self.anchors.lock().unwrap().insert(id, best);
         best
+    }
+}
+
+/// Bring `data` up to date with `run_dir`. Files are parsed without holding
+/// the data lock, so readers keep the previous snapshot meanwhile; a failure
+/// leaves that snapshot untouched. Returns false if it should be retried soon.
+fn refresh(
+    data: &RwLock<RunData>,
+    run_dir: &Path,
+    waiting: &mut Option<std::time::Instant>,
+) -> anyhow::Result<bool> {
+    let old = data.read().unwrap().files.clone();
+    let cur = list_files(run_dir, &old);
+    let mut p = plan(&old, &cur);
+    if p == Plan::Wait {
+        let since = *waiting.get_or_insert_with(std::time::Instant::now);
+        if since.elapsed() < MAX_WAIT {
+            return Ok(false);
+        }
+        p = Plan::Rebuild;
+    }
+    *waiting = None;
+    match p {
+        Plan::Same | Plan::Wait => {}
+        Plan::Hold(fresh) => {
+            if !fresh.is_empty() {
+                let new: Vec<FileInfo> = fresh.iter().map(|&i| cur[i].clone()).collect();
+                let mut chunks = Vec::new();
+                read_files(&new, |c| chunks.push(c))?;
+                let mut d = data.write().unwrap();
+                d.absorb_chunks(chunks);
+                d.files = old.into_iter().chain(new).collect();
+            }
+            return Ok(false);
+        }
+        Plan::Append(fresh) | Plan::Swap(fresh) => {
+            let new: Vec<FileInfo> = fresh.iter().map(|&i| cur[i].clone()).collect();
+            let mut chunks = Vec::new();
+            read_files(&new, |c| chunks.push(c))?;
+            let mut d = data.write().unwrap();
+            d.absorb_chunks(chunks);
+            d.files = cur;
+        }
+        Plan::Rebuild => {
+            let mut d = RunData::default();
+            d.absorb(&cur)?;
+            d.files = cur;
+            let mut cur = data.write().unwrap();
+            if d.keys == cur.keys {
+                d.gen = cur.gen;
+            }
+            let old = std::mem::replace(&mut *cur, d);
+            drop(cur);
+            drop(old);
+            release_memory();
+        }
+    }
+    Ok(true)
+}
+
+/// Hand freed parse buffers back to the OS. glibc keeps them in per-thread
+/// arenas otherwise, nearly doubling RSS after loading big runs.
+fn release_memory() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    unsafe {
+        libc::malloc_trim(0);
     }
 }
 
 type Shared = Arc<App>;
 
+#[derive(Default)]
+struct Entry {
+    data: Arc<RwLock<RunData>>,
+    loaded: std::sync::atomic::AtomicBool,
+    /// Held while refreshing; when a compaction wait began.
+    refresh: Mutex<Option<std::time::Instant>>,
+}
+
 struct App {
     root: PathBuf,
-    cache: Mutex<HashMap<String, Arc<RwLock<RunData>>>>,
+    cache: Mutex<HashMap<String, Arc<Entry>>>,
     dirty: Mutex<HashSet<String>>,
     tx: broadcast::Sender<String>,
 }
 
 impl App {
-    /// A run's data, refreshed if the watcher saw it change.
+    fn new(root: PathBuf) -> App {
+        App {
+            root,
+            cache: Mutex::new(HashMap::new()),
+            dirty: Mutex::new(HashSet::new()),
+            tx: broadcast::channel(4096).0,
+        }
+    }
+
+    /// A run's data, refreshed if the watcher saw it change. Once a run has
+    /// loaded, requests never wait on (or see the middle of) a refresh: they
+    /// read the last complete snapshot.
     fn run(&self, name: &str) -> anyhow::Result<Arc<RwLock<RunData>>> {
+        use std::sync::atomic::Ordering::{Acquire, Release};
         if !valid_name(name) || !self.root.join(name).join(META_FILE).is_file() {
             anyhow::bail!("no such run");
         }
-        let (data, fresh) = {
-            let mut cache = self.cache.lock().unwrap();
-            let fresh = !cache.contains_key(name);
-            (cache.entry(name.to_string()).or_default().clone(), fresh)
-        };
+        let entry = self
+            .cache
+            .lock()
+            .unwrap()
+            .entry(name.to_string())
+            .or_default()
+            .clone();
         let stale = self.dirty.lock().unwrap().remove(name);
-        if fresh || stale {
-            data.write().unwrap().refresh(&self.root.join(name))?;
+        let loaded = entry.loaded.load(Acquire);
+        if loaded && !stale {
+            return Ok(entry.data.clone());
         }
-        Ok(data)
+        let mut waiting = if loaded {
+            match entry.refresh.try_lock() {
+                Ok(g) => g,
+                Err(_) => {
+                    // Another request is refreshing; it may predate this change.
+                    self.dirty.lock().unwrap().insert(name.to_string());
+                    return Ok(entry.data.clone());
+                }
+            }
+        } else {
+            let g = entry.refresh.lock().unwrap();
+            if entry.loaded.load(Acquire) && !stale {
+                return Ok(entry.data.clone());
+            }
+            g
+        };
+        match refresh(&entry.data, &self.root.join(name), &mut waiting) {
+            Ok(done) => {
+                entry.loaded.store(true, Release);
+                if !done {
+                    self.dirty.lock().unwrap().insert(name.to_string());
+                }
+            }
+            Err(e) if loaded => {
+                log::warn!("refresh {name}: {e}; serving the previous snapshot");
+                self.dirty.lock().unwrap().insert(name.to_string());
+            }
+            Err(e) => return Err(e),
+        }
+        Ok(entry.data.clone())
     }
 }
 
@@ -286,6 +634,9 @@ async fn runs(State(app): State<Shared>) -> Response {
 #[derive(Deserialize)]
 struct KeysReq {
     runs: Vec<String>,
+    /// `etag` of the client's last response; unchanged keys come back as `same`.
+    #[serde(default)]
+    etag: Option<String>,
 }
 
 #[derive(Serialize, Default)]
@@ -294,38 +645,51 @@ struct KeysResp {
     /// Histogram metrics (see `hist::bucket_of`); their bucket series are not in `keys`.
     hists: Vec<String>,
     errors: BTreeMap<String, String>,
+    etag: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    same: bool,
 }
 
 async fn keys(State(app): State<Shared>, Json(req): Json<KeysReq>) -> Response {
     let out = tokio::task::spawn_blocking(move || {
-        let per_run: Vec<(String, anyhow::Result<Vec<String>>)> = req
+        let per_run: Vec<(String, anyhow::Result<Arc<RwLock<RunData>>>)> = req
             .runs
             .par_iter()
-            .map(|r| {
-                (
-                    r.clone(),
-                    app.run(r).map(|d| d.read().unwrap().keys.clone()),
-                )
-            })
+            .map(|r| (r.clone(), app.run(r)))
             .collect();
-        let (mut keys, mut hists) = (BTreeSet::new(), BTreeSet::new());
         let mut out = KeysResp::default();
-        for (r, res) in per_run {
+        let mut guards = Vec::new();
+        let mut tag = std::collections::hash_map::DefaultHasher::new();
+        for (r, res) in &per_run {
+            std::hash::Hash::hash(r, &mut tag);
             match res {
-                Ok(ks) => {
-                    for k in ks {
-                        match crate::hist::bucket_of(&k) {
-                            Some((base, _)) => hists.insert(base),
-                            None => keys.insert(k),
-                        };
-                    }
+                Ok(d) => {
+                    let g = d.read().unwrap();
+                    std::hash::Hash::hash(&(g.gen, g.keys.len()), &mut tag);
+                    guards.push(g);
                 }
                 Err(e) => {
-                    out.errors.insert(r, e.to_string());
+                    std::hash::Hash::hash(&e.to_string(), &mut tag);
+                    out.errors.insert(r.clone(), e.to_string());
                 }
             }
         }
-        out.keys = keys.into_iter().collect();
+        out.etag = format!("{:016x}", std::hash::Hasher::finish(&tag));
+        if req.etag.as_deref() == Some(out.etag.as_str()) {
+            out.same = true;
+            out.errors.clear();
+            return out;
+        }
+        let (mut keys, mut hists) = (BTreeSet::new(), BTreeSet::new());
+        for g in &guards {
+            for k in &g.keys {
+                match crate::hist::bucket_of(k) {
+                    Some((base, _)) => hists.insert(base),
+                    None => keys.insert(k.as_str()),
+                };
+            }
+        }
+        out.keys = keys.into_iter().map(str::to_string).collect();
         out.hists = hists.into_iter().collect();
         out
     })
@@ -390,7 +754,7 @@ struct Mapped {
 }
 
 fn map_run(
-    data: &mut RunData,
+    data: &RunData,
     req: &PlotReq,
     anchor_re: Option<&Regex>,
 ) -> Result<Option<(Mapped, f64)>, String> {
@@ -401,7 +765,6 @@ fn map_run(
         },
         _ => 0.0,
     };
-    let data = &*data;
     let Some(s) = data.get(&req.key) else {
         return Ok(None);
     };
@@ -481,7 +844,7 @@ fn eval_formula<T: Send>(
         .map(|p| resolve_run(app, &p).map(|n| (p, n)))
         .collect::<Result<_, _>>()?;
     let anchor_re = align.and_then(|a| Regex::new(&a.key).ok());
-    let offset_of = |d: &mut RunData| match (align, anchor_re.as_ref()) {
+    let offset_of = |d: &RunData| match (align, anchor_re.as_ref()) {
         (Some(a), Some(re)) => d.anchor(a, re),
         _ => Some(0.0),
     };
@@ -491,8 +854,8 @@ fn eval_formula<T: Send>(
             .par_iter()
             .map(|r| {
                 let res = app.run(r).map_err(|e| e.to_string()).and_then(|d| {
-                    let mut d = d.write().unwrap();
-                    let Some(o) = offset_of(&mut d) else {
+                    let d = d.read().unwrap();
+                    let Some(o) = offset_of(&d) else {
                         return Ok(None);
                     };
                     let scope = crate::expr::Scope {
@@ -521,7 +884,7 @@ fn eval_formula<T: Send>(
         .par_iter()
         .map(|n| {
             let r = app.run(n).map_err(|e| e.to_string()).map(|d| {
-                let o = offset_of(&mut d.write().unwrap());
+                let o = offset_of(&d.read().unwrap());
                 (d, o)
             });
             (n.clone(), r)
@@ -684,7 +1047,7 @@ fn plot_blocking(app: &App, req: PlotReq) -> Vec<u8> {
                 let res = app
                     .run(r)
                     .map_err(|e| e.to_string())
-                    .and_then(|d| map_run(&mut d.write().unwrap(), &req, anchor_re.as_ref()));
+                    .and_then(|d| map_run(&d.read().unwrap(), &req, anchor_re.as_ref()));
                 (r.clone(), res)
             })
             .collect(),
@@ -910,7 +1273,7 @@ fn stats_blocking(app: &App, req: StatsReq) -> StatsResp {
         .flat_map_iter(|r| {
             let mut out = Vec::new();
             let Ok(d) = app.run(r) else { return out };
-            let mut d = d.write().unwrap();
+            let d = d.read().unwrap();
             let offset = match (&req.align, anchor_re.as_ref()) {
                 (Some(a), Some(are)) => match d.anchor(a, are) {
                     Some(o) => o,
@@ -994,7 +1357,7 @@ fn hist_blocking(app: &App, req: HistReq) -> HistResp {
         .par_iter()
         .map(|r| {
             let res = app.run(r).map_err(|e| e.to_string()).map(|d| {
-                let mut d = d.write().unwrap();
+                let d = d.read().unwrap();
                 let offset = match (&req.align, anchor_re.as_ref()) {
                     (Some(a), Some(re)) => d.anchor(a, re)?,
                     _ => 0.0,
@@ -1143,7 +1506,7 @@ fn hist_stats_blocking(app: &App, req: HistStatsReq) -> HistStatsResp {
         .flat_map_iter(|r| {
             let mut out = Vec::new();
             let Ok(d) = app.run(r) else { return out };
-            let mut d = d.write().unwrap();
+            let d = d.read().unwrap();
             let offset = match (&req.align, anchor_re.as_ref()) {
                 (Some(a), Some(are)) => match d.anchor(a, are) {
                     Some(o) => o,
@@ -1452,25 +1815,53 @@ fn signature(run_dir: &Path) -> Vec<(String, u64)> {
 
 async fn watch(app: Shared) {
     let mut seen: HashMap<String, Vec<(String, u64)>> = HashMap::new();
+    let mut lingering: HashSet<String> = HashSet::new();
     loop {
+        // A loaded run still dirty a tick later was served stale (mid-refresh
+        // or waiting out a compaction) and may never change on disk again, so
+        // nudge clients to ask once more.
+        let dirty: HashSet<String> = {
+            let cache = app.cache.lock().unwrap();
+            app.dirty
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|n| {
+                    cache
+                        .get(*n)
+                        .is_some_and(|e| e.loaded.load(std::sync::atomic::Ordering::Acquire))
+                })
+                .cloned()
+                .collect()
+        };
+        for name in dirty.intersection(&lingering) {
+            let _ = app.tx.send(name.clone());
+        }
+        lingering = dirty;
         let root = app.root.clone();
-        let sigs = tokio::task::spawn_blocking(move || {
+        let scan = tokio::task::spawn_blocking(move || {
             let dirs: Vec<String> = std::fs::read_dir(&root)
-                .into_iter()
-                .flatten()
+                .ok()?
                 .flatten()
                 .map(|e| e.file_name().to_string_lossy().to_string())
                 .filter(|n| valid_name(n))
                 .collect();
-            dirs.into_par_iter()
+            let sigs = dirs
+                .into_par_iter()
                 .map(|n| {
                     let s = signature(&root.join(&n));
                     (n, s)
                 })
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            Some(sigs)
         })
-        .await
-        .unwrap_or_default();
+        .await;
+        // A failed scan (e.g. an NFS hiccup) says nothing about the runs:
+        // keep their caches rather than dropping and reloading them.
+        let Ok(Some(sigs)) = scan else {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            continue;
+        };
         let names: HashSet<String> = sigs.iter().map(|(n, _)| n.clone()).collect();
         for (name, sig) in sigs {
             if seen.get(&name) != Some(&sig) {
@@ -1483,7 +1874,10 @@ async fn watch(app: Shared) {
             }
         }
         seen.retain(|n, _| names.contains(n));
-        app.cache.lock().unwrap().retain(|n, _| names.contains(n));
+        app.cache
+            .lock()
+            .unwrap()
+            .retain(|n, _| names.contains(n) || app.root.join(n).join(META_FILE).is_file());
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 }
@@ -1509,13 +1903,7 @@ fn index_page(niu_lai: bool) -> String {
 
 pub fn router(root: PathBuf, niu_lai: bool) -> Router {
     let page: &'static str = index_page(niu_lai).leak();
-    let (tx, _) = broadcast::channel(4096);
-    let app = Arc::new(App {
-        root,
-        cache: Mutex::new(HashMap::new()),
-        dirty: Mutex::new(HashSet::new()),
-        tx,
-    });
+    let app = Arc::new(App::new(root));
     tokio::spawn(watch(app.clone()));
     Router::new()
         .route("/", get(move || async move { Html(page) }))
@@ -1546,4 +1934,205 @@ pub async fn serve(root: PathBuf, addr: &str, niu_lai: bool) -> anyhow::Result<(
     );
     axum::serve(listener, router(root, niu_lai)).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{ArrayRef, Float64Array, StringArray};
+    use arrow::record_batch::RecordBatch;
+
+    /// `n` samples each of `metrics` series, starting at time `t0`.
+    fn write(path: &Path, metrics: usize, t0: usize, n: usize) {
+        let mut ep = Vec::new();
+        let mut name = Vec::new();
+        let mut v = Vec::new();
+        let mut t = Vec::new();
+        for m in 0..metrics {
+            for i in t0..t0 + n {
+                ep.push("trainer".to_string());
+                name.push(format!("m{m}"));
+                v.push(i as f64);
+                t.push(i as f64);
+            }
+        }
+        let batch = RecordBatch::try_from_iter([
+            (
+                "scraper_endpoint",
+                Arc::new(StringArray::from(ep)) as ArrayRef,
+            ),
+            ("metric_name", Arc::new(StringArray::from(name)) as ArrayRef),
+            ("metric_value", Arc::new(Float64Array::from(v)) as ArrayRef),
+            (
+                "time_since_start",
+                Arc::new(Float64Array::from(t)) as ArrayRef,
+            ),
+        ])
+        .unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let tmp = path.with_extension("tmp");
+        let mut w = parquet::arrow::ArrowWriter::try_new(
+            std::fs::File::create(&tmp).unwrap(),
+            batch.schema(),
+            None,
+        )
+        .unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+        std::fs::rename(tmp, path).unwrap();
+    }
+
+    fn setup() -> (tempfile::TempDir, App) {
+        let root = tempfile::tempdir().unwrap();
+        let run = root.path().join("r");
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::write(run.join(META_FILE), "{}").unwrap();
+        let app = App::new(root.path().to_path_buf());
+        (root, app)
+    }
+
+    fn total(app: &App) -> (usize, usize) {
+        let d = app.run("r").unwrap();
+        let d = d.read().unwrap();
+        (d.keys.len(), d.series.iter().map(|s| s.t.len()).sum())
+    }
+
+    fn touch(app: &App) {
+        app.dirty.lock().unwrap().insert("r".into());
+    }
+
+    #[test]
+    fn compaction_never_hides_or_duplicates_data() {
+        let (root, app) = setup();
+        let seg = root.path().join("r/segments");
+        write(&seg.join("out-0.parquet"), 50, 0, 10);
+        write(&seg.join("out-1.parquet"), 50, 10, 10);
+        assert_eq!(total(&app), (50, 1000));
+
+        // Merged output appears before its sources are deleted.
+        write(&seg.join("incomplete-0.parquet"), 50, 0, 20);
+        touch(&app);
+        assert_eq!(total(&app), (50, 1000));
+        // Sources deleted one at a time; a new segment arriving meanwhile shows up.
+        std::fs::remove_file(seg.join("out-0.parquet")).unwrap();
+        write(&seg.join("out-2.parquet"), 50, 20, 10);
+        touch(&app);
+        assert_eq!(total(&app), (50, 1500));
+        std::fs::remove_file(seg.join("out-1.parquet")).unwrap();
+        touch(&app);
+        assert_eq!(total(&app), (50, 1500));
+        let gen = app.run("r").unwrap().read().unwrap().gen;
+
+        // A half-written segment is ignored, not fatal.
+        std::fs::write(seg.join("out-3.parquet"), b"PAR1garbage").unwrap();
+        touch(&app);
+        assert_eq!(total(&app), (50, 1500));
+        std::fs::remove_file(seg.join("out-3.parquet")).unwrap();
+
+        // An old scraper's half-written final.parquet is passed over.
+        std::fs::write(seg.join("final.parquet"), b"PAR1garbage").unwrap();
+        touch(&app);
+        assert_eq!(total(&app), (50, 1500));
+
+        // Final compaction: segments/final.parquet replaces everything, then moves up.
+        write(&seg.join("final.parquet"), 50, 0, 30);
+        touch(&app);
+        assert_eq!(total(&app), (50, 1500));
+        for f in ["incomplete-0.parquet", "out-2.parquet"] {
+            std::fs::remove_file(seg.join(f)).unwrap();
+        }
+        touch(&app);
+        assert_eq!(total(&app), (50, 1500));
+        std::fs::rename(
+            seg.join("final.parquet"),
+            root.path().join("r/final.parquet"),
+        )
+        .unwrap();
+        touch(&app);
+        assert_eq!(total(&app), (50, 1500));
+        // Same keys throughout: clients' key lists stay valid.
+        assert_eq!(app.run("r").unwrap().read().unwrap().gen, gen);
+        let d = app.run("r").unwrap();
+        let d = d.read().unwrap();
+        let s = d.get("trainer/m7").unwrap();
+        assert!(s.t.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    #[test]
+    fn plan_waits_for_compaction_then_swaps() {
+        let f = |name: &str, rows| FileInfo {
+            path: PathBuf::from(name),
+            len: rows,
+            rows,
+            groups: 1,
+        };
+        let old = vec![f("out-0.parquet", 5), f("out-1.parquet", 5)];
+        assert_eq!(plan(&old, &old), Plan::Same);
+        let mut cur = old.clone();
+        cur.push(f("out-2.parquet", 5));
+        assert_eq!(plan(&old, &cur), Plan::Append(vec![2]));
+        cur.insert(0, f("incomplete-0.parquet", 10));
+        assert_eq!(plan(&old, &cur), Plan::Hold(vec![3]));
+        cur.remove(1);
+        assert_eq!(plan(&old, &cur), Plan::Hold(vec![2]));
+        cur.remove(1);
+        assert_eq!(plan(&old, &cur), Plan::Swap(vec![1]));
+        // Rows lost without a merged replacement: wait (then `MAX_WAIT` reloads).
+        let cur = vec![f("incomplete-0.parquet", 8)];
+        assert_eq!(plan(&old, &cur), Plan::Wait);
+        assert_eq!(plan(&old, &[]), Plan::Wait);
+        // Merged output with extra rows and nothing left to delete: reload.
+        let cur = vec![f("final.parquet", 12)];
+        assert_eq!(plan(&old, &cur), Plan::Rebuild);
+    }
+
+    #[test]
+    fn row_group_spanning_several_batches_loads() {
+        let (root, app) = setup();
+        write(&root.path().join("r/final.parquet"), 2, 0, 100_000);
+        assert_eq!(total(&app), (2, 200_000));
+    }
+
+    #[test]
+    fn slow_upload_never_double_counts() {
+        let (root, app) = setup();
+        let seg = root.path().join("r/segments");
+        write(&seg.join("out-0.parquet"), 50, 0, 10);
+        write(&seg.join("out-1.parquet"), 50, 10, 10);
+        assert_eq!(total(&app), (50, 1000));
+        // Merged file written; sources stay until its upload finishes, well past `MAX_WAIT`.
+        write(&seg.join("incomplete-0.parquet"), 50, 0, 20);
+        let data = app.run("r").unwrap();
+        let mut waiting = Some(std::time::Instant::now() - 2 * MAX_WAIT);
+        for _ in 0..3 {
+            assert!(!refresh(&data, &root.path().join("r"), &mut waiting).unwrap());
+            assert_eq!(total(&app), (50, 1000));
+        }
+        for f in ["out-0.parquet", "out-1.parquet"] {
+            std::fs::remove_file(seg.join(f)).unwrap();
+        }
+        assert!(refresh(&data, &root.path().join("r"), &mut waiting).unwrap());
+        assert_eq!(total(&app), (50, 1000));
+    }
+
+    #[test]
+    fn concurrent_requests_never_see_an_empty_run() {
+        let (root, app) = setup();
+        let seg = root.path().join("r/segments");
+        for i in 0..20 {
+            write(&seg.join(format!("out-{i}.parquet")), 200, i * 10, 10);
+        }
+        let app = Arc::new(app);
+        std::thread::scope(|s| {
+            for _ in 0..8 {
+                let app = app.clone();
+                s.spawn(move || {
+                    for _ in 0..50 {
+                        touch(&app);
+                        assert_eq!(total(&app), (200, 40_000));
+                    }
+                });
+            }
+        });
+    }
 }
