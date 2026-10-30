@@ -1288,6 +1288,8 @@ function applyTheme(name) {
   $("#themetog").textContent = plain ? "niu-lai: off" : "niu-lai: on";
   $("#chat h2 > span").textContent = plain ? "assistant" : "niu lai says"; $("#chatsend").textContent = plain ? "send" : "moo";
   $("#chatin").placeholder = plain ? 'ask about your runs, e.g. "compare loss across lr, log scale"  (enter sends, shift+enter newline)' : 'moo? e.g. "compare loss across lr, log scale"  (enter sends, shift+enter newline)';
+  // Series cache their colour at fetch time; re-pick from this theme's palette so finished runs don't keep the other theme's.
+  for (const c of charts.values()) { for (const s of c.data?.series || []) { s.color = color(s.name); s.rgba = rgba(s.color); } for (const r of c.data?.runs || []) r.color = color(r.name); }
   for (const c of charts.values()) { c.chipSig = null; if (c.cssW) c.setSize(c.cssW, c.cssH); c.dirty = true; c.last = 0; if (c.data) c.draw(); }
   for (const v of VLISTS) v.schedule(true);
   if (charts.size) pump();
