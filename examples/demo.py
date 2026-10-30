@@ -3,6 +3,9 @@
 
 Some runs finish, one crashes (goes stale), the rest stay live until Ctrl+C.
     python3 examples/demo.py --bin target/release/nlv --root runs
+
+--stress adds thousands of metrics per job, scrapes 5x a second and compacts every 10 s,
+so several browser tabs can watch big live runs through many mid-run compactions.
 """
 import argparse, os, signal, subprocess, sys, time
 from pathlib import Path
@@ -29,8 +32,17 @@ ap.add_argument("--base-port", type=int, default=9101)
 ap.add_argument("--addr", default="127.0.0.1:8737", help="where the viewer listens")
 ap.add_argument("--niu-lai", action="store_true", help="serve with the niu-lai look as the default")
 ap.add_argument("--no-serve", action="store_true", help="only scrape; run `nlv serve` yourself")
+ap.add_argument("--stress", type=int, nargs="?", const=4000, default=0, metavar="N",
+                help="add N extra metrics per job (default 4000), scrape every 200 ms, compact every 10 s")
 a = ap.parse_args()
 cfg = Path(__file__).parent / "demo.toml"
+interval_ms = 500
+if a.stress:
+    interval_ms = 200
+    Path(a.root).mkdir(parents=True, exist_ok=True)
+    stress_cfg = Path(a.root) / ".demo-stress.toml"
+    stress_cfg.write_text(cfg.read_text().replace("save_interval_secs = 2", "save_interval_secs = 1\nsync_interval_secs = 10"))
+    cfg = stress_cfg
 
 server = None
 if not a.no_serve:
@@ -40,9 +52,9 @@ if not a.no_serve:
 procs = []
 for i, (name, lr, seed, speed, life) in enumerate(RUNS):
     port = a.base_port + i
-    serve(port, FakeJob(lr, seed, speed, batch=128 if "bs128" in name else 64))
+    serve(port, FakeJob(lr, seed, speed * (3 if a.stress else 1), batch=128 if "bs128" in name else 64, extra=a.stress))
     cmd = [a.bin, "scrape", "--config", str(cfg), "--root", a.root, "--run", name,
-           "--target", f"trainer=http://127.0.0.1:{port}/metrics", "--interval-ms", "500",
+           "--target", f"trainer=http://127.0.0.1:{port}/metrics", "--interval-ms", str(interval_ms),
            "--label", f"lr={lr:g}", "--label", f"seed={seed}",
            "--label", f"batch={128 if 'bs128' in name else 64}",
            "--label", f"optimizer={'adamw' if i % 2 == 0 else 'lion'}"]

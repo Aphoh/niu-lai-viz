@@ -31,8 +31,10 @@ class Hist:
 
 
 class FakeJob:
-    def __init__(self, lr, seed, speed, gpus=4, batch=64):
+    def __init__(self, lr, seed, speed, gpus=4, batch=64, extra=0):
         self.lr, self.speed, self.gpus, self.batch = lr, speed, gpus, batch
+        # Stress mode: `extra` more gauges, like a big model's per-layer stats.
+        self.extra = [(f'layer_stat{{layer="{i // 8}",stat="s{i % 8}"}}', 1 + i % 7, i * 0.37) for i in range(extra)]
         self.rng = random.Random(seed)
         self.t0 = time.time()
         self.lock = threading.Lock()
@@ -146,6 +148,9 @@ class FakeJob:
             out += self.ttft_h.render("rollout_time_to_first_token_seconds", "Rollout TTFT")
             out += self.itl_h.render("rollout_inter_token_latency_seconds", "Rollout ITL (12 tokens sampled per request)")
             out.append(f"process_resident_memory_bytes {int(2e9 + r.random() * 1e8)}")
+            if self.extra:
+                out.append("# TYPE layer_stat gauge")
+                out += [f"{n} {sc * (1 + 0.3 * math.sin(t / 5 + ph)) + r.random() * 0.05:.4f}" for n, sc, ph in self.extra]
             return "\n".join(out) + "\n"
 
 

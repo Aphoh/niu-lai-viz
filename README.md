@@ -54,6 +54,8 @@ python3 examples/demo.py --bin target/release/nlv --root runs
 
 Then open the printed link (http://127.0.0.1:8737). Ctrl+C stops it.
 
+Add `--stress` for a load test: each job exports 4000 extra metrics (`--stress N` for another count), is scraped every 200 ms and compacted every 10 s. Open a few tabs to see how one `nlv serve` holds up with big live runs.
+
 The binary is `nlv` (`nlv scrape`, `nlv serve`, `nlv compact`). `cargo install --path crates/niu-lai-viz` puts it on your PATH.
 
 ## Scrape your own job
