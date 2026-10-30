@@ -1799,7 +1799,29 @@ fn signature(run_dir: &Path) -> Vec<(String, u64)> {
 
 async fn watch(app: Shared) {
     let mut seen: HashMap<String, Vec<(String, u64)>> = HashMap::new();
+    let mut lingering: HashSet<String> = HashSet::new();
     loop {
+        // A loaded run still dirty a tick later was served stale (mid-refresh
+        // or waiting out a compaction) and may never change on disk again, so
+        // nudge clients to ask once more.
+        let dirty: HashSet<String> = {
+            let cache = app.cache.lock().unwrap();
+            app.dirty
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|n| {
+                    cache
+                        .get(*n)
+                        .is_some_and(|e| e.loaded.load(std::sync::atomic::Ordering::Acquire))
+                })
+                .cloned()
+                .collect()
+        };
+        for name in dirty.intersection(&lingering) {
+            let _ = app.tx.send(name.clone());
+        }
+        lingering = dirty;
         let root = app.root.clone();
         let scan = tokio::task::spawn_blocking(move || {
             let dirs: Vec<String> = std::fs::read_dir(&root)
