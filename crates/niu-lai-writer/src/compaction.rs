@@ -206,8 +206,15 @@ fn compact_with_polars(
         maintain_order: true,
     };
 
+    // Sink to a hidden temp name and rename, so readers (`nlv serve`, the
+    // compactor's own discovery) never see a half-written file.
+    let file_name = output_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let temp_output = output_path.with_file_name(format!(".{file_name}.tmp"));
     sorted
-        .sink_parquet(&output_path.to_path_buf(), sink_options, None)
+        .sink_parquet(&temp_output, sink_options, None)
         .map_err(|e| crate::NoMoreError::Arrow(format!("Failed to sink parquet: {}", e)))?;
 
     // Read back row count (sink_parquet doesn't return it).
@@ -217,7 +224,7 @@ fn compact_with_polars(
     // 1 -- rather than the value. Every compaction therefore logged
     // "Wrote 1 rows", which reads as catastrophic data loss on a run that
     // actually wrote millions of rows. Extract the value instead.
-    let total_rows = LazyFrame::scan_parquet(output_path, Default::default())
+    let total_rows = LazyFrame::scan_parquet(&temp_output, Default::default())
         .and_then(|lf| lf.select([col("metric_name").count().alias("n")]).collect())
         .ok()
         .and_then(|df| {
@@ -228,6 +235,7 @@ fn compact_with_polars(
         })
         .map(|n| n as usize)
         .unwrap_or(0);
+    std::fs::rename(&temp_output, output_path).map_err(crate::NoMoreError::Io)?;
 
     info!("Wrote {} rows to {}", total_rows, output_path.display());
 

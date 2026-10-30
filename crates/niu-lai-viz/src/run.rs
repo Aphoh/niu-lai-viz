@@ -92,10 +92,27 @@ impl RunMeta {
 
 /// Data files for a run, in read order: final.parquet supersedes segments.
 pub fn data_files(run_dir: &Path) -> Vec<PathBuf> {
-    let final_path = run_dir.join(FINAL_FILE);
-    if final_path.is_file() {
-        return vec![final_path];
-    }
+    final_files(run_dir)
+        .into_iter()
+        .next()
+        .map_or_else(|| segment_files(run_dir), |f| vec![f])
+}
+
+/// Existing final.parquet candidates, preferred first. Final compaction writes
+/// segments/final.parquet and deletes the segments before moving it up, so it
+/// stands in for them in between.
+pub fn final_files(run_dir: &Path) -> Vec<PathBuf> {
+    [
+        run_dir.join(FINAL_FILE),
+        run_dir.join(SEGMENTS_DIR).join(FINAL_FILE),
+    ]
+    .into_iter()
+    .filter(|p| p.is_file())
+    .collect()
+}
+
+/// incomplete-N then out-N segments, in read order.
+pub fn segment_files(run_dir: &Path) -> Vec<PathBuf> {
     let seg = run_dir.join(SEGMENTS_DIR);
     let index = |name: &str, prefix: &str| -> Option<usize> {
         name.strip_prefix(prefix)?

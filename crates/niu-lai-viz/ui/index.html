@@ -490,7 +490,7 @@ async function refreshRuns() {
 let keysCtl;
 async function refreshKeys() {
   keysCtl?.abort(); keysCtl = new AbortController();
-  try { const res = await (await api("/api/keys", { runs: [...S.picked] }, keysCtl.signal)).json(); S.keys = res.keys; S.hists = res.hists || []; filterKeys(); } catch (e) { if (e.name !== "AbortError") throw e; }
+  try { const res = await (await api("/api/keys", { runs: [...S.picked], etag: S.keysEtag }, keysCtl.signal)).json(); if (res.same) return; S.keysEtag = res.etag; S.keys = res.keys; S.hists = res.hists || []; filterKeys(); } catch (e) { if (e.name !== "AbortError") throw e; }
 }
 const refreshKeysSoon = debounce(refreshKeys, 250);
 

@@ -1875,6 +1875,7 @@ dependencies = [
  "env_logger",
  "futures",
  "gethostname",
+ "libc",
  "log",
  "niu-lai-writer",
  "object_store",
