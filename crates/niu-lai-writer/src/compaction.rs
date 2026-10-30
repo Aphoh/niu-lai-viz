@@ -88,6 +88,42 @@ fn parquet_has_metric_name_clean(path: &std::path::PathBuf) -> bool {
     }
 }
 
+/// Whether `metric_name` ascends across the whole file: true for a full
+/// rewrite, false once `compact_incremental` has appended separately sorted
+/// row groups. Judged from row-group min/max stats; missing stats mean false.
+fn parquet_globally_sorted(path: &Path) -> bool {
+    let Ok(f) = File::open(path) else {
+        return false;
+    };
+    let Ok(meta) = parquet::file::metadata::ParquetMetaDataReader::new().parse_and_finish(&f)
+    else {
+        return false;
+    };
+    let Some(c) = meta
+        .file_metadata()
+        .schema_descr()
+        .columns()
+        .iter()
+        .position(|c| c.name() == "metric_name")
+    else {
+        return false;
+    };
+    let mut prev_max: Option<Vec<u8>> = None;
+    for rg in meta.row_groups() {
+        let Some(st) = rg.column(c).statistics() else {
+            return false;
+        };
+        let (Some(min), Some(max)) = (st.min_bytes_opt(), st.max_bytes_opt()) else {
+            return false;
+        };
+        if prev_max.as_deref().is_some_and(|p| p > min) {
+            return false;
+        }
+        prev_max = Some(max.to_vec());
+    }
+    true
+}
+
 /// Compact parquet and arrow files using Polars for fast parallel sorting.
 /// Uses sink_parquet for streaming writes to avoid loading entire dataset into memory.
 ///
@@ -117,7 +153,7 @@ fn compact_with_polars(
         match LazyFrame::scan_parquet(path, Default::default()) {
             Ok(mut lf) => {
                 // If file has metric_name_clean, it was properly compacted and is sorted
-                if parquet_has_metric_name_clean(path) {
+                if parquet_has_metric_name_clean(path) && parquet_globally_sorted(path) {
                     info!(
                         "File {} is already sorted, setting sorted flag",
                         path.display()
@@ -781,6 +817,37 @@ mod tests {
         ParquetWriter::new(File::create(path).unwrap())
             .finish(&mut df)
             .unwrap();
+    }
+
+    #[test]
+    fn rewriting_an_appended_file_sorts_it_globally() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        segment(&d.join("out-0.parquet"), 0.0, 30);
+        let first = d.join("incomplete-1.parquet");
+        compact_incremental(&[d.join("out-0.parquet")], None, &first).unwrap();
+        segment(&d.join("out-1.parquet"), 30.0, 30);
+        let second = d.join("incomplete-2.parquet");
+        compact_incremental(&[first.clone(), d.join("out-1.parquet")], None, &second).unwrap();
+        assert!(parquet_globally_sorted(&first));
+        assert!(!parquet_globally_sorted(&second));
+
+        // The schema-change fallback rewrites appended files with compact_with_polars.
+        let third = d.join("incomplete-3.parquet");
+        assert_eq!(compact_with_polars(&[second], None, &third).unwrap(), 60);
+        let df = LazyFrame::scan_parquet(&third, Default::default())
+            .unwrap()
+            .collect()
+            .unwrap();
+        let names: Vec<&str> = df
+            .column("metric_name")
+            .unwrap()
+            .str()
+            .unwrap()
+            .into_no_null_iter()
+            .collect();
+        assert!(names.windows(2).all(|w| w[0] <= w[1]));
+        assert!(parquet_globally_sorted(&third));
     }
 
     fn groups(path: &Path) -> usize {
